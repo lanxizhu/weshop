@@ -1,0 +1,13 @@
+{
+  "name": "@weshop/eslint-config",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@antfu/eslint-config": "^9.5.1",
+    "@eslint-react/eslint-plugin": "^5.27.0",
+    "eslint-plugin-react-refresh": "^0.5.7"
+  },
+  "peerDependencies": {
+    "eslint": "^10.12.0"
+  }
+}

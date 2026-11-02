@@ -1,0 +1,14 @@
+# 根 .dockerignore：避免把本地依赖、构建产物和运行期数据打进构建上下文
+**/node_modules
+**/.git
+**/dist
+**/build
+**/logs
+**/.DS_Store
+
+# API 运行期数据（SQLite 与上传文件通过 volume 持久化，不随镜像分发）
+apps/api/server
+
+# 小程序产物无需进入任何镜像
+apps/miniprogram/dist
+apps/miniprogram/.swc

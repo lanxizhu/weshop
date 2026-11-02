@@ -1,0 +1,17 @@
+{
+  "description": "weshop 小程序（Taro 4 + React + TS，编译产物在 dist/）",
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "libVersion": "latest",
+  "projectname": "weshop-miniprogram",
+  "miniprogramRoot": "dist/",
+  "setting": {
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "urlCheck": false
+  },
+  "packOptions": {
+    "ignore": []
+  }
+}

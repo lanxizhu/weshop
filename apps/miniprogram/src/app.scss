@@ -1,0 +1,37 @@
+@use './styles/variables.scss' as *;
+
+page {
+  background: #f4f4f5;
+  color: #18181b;
+  font-size: 28rpx;
+  line-height: 1.5;
+}
+
+/* 低库存徽标 */
+.badge {
+  display: inline-block;
+  padding: 2rpx 12rpx;
+  border-radius: 8rpx;
+  font-size: 20rpx;
+  line-height: 1.6;
+
+  &--danger {
+    color: #fff;
+    background: $danger;
+  }
+
+  &--warn {
+    color: $warn;
+    background: rgba($warn, 0.12);
+  }
+}
+
+/* 无图占位 */
+.image-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ececee;
+  color: #a1a1aa;
+  font-size: 24rpx;
+}

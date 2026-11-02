@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+.gradle/
+.DS_Store
+*.log
+*.db
+*.db.bak-*
+uploads/
+miniprogram_npm/
+
+# 环境变量与密钥（.env.example 除外）
+.env
+.env.*
+!.env.example
+
+# 日志与覆盖率
+logs/
+coverage/
+
+# 编译缓存
+.swc/
+
+# 编辑器与本地覆盖配置
+.idea/
+*.local

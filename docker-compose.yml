@@ -1,0 +1,62 @@
+# WeShop 部署编排
+#
+# 默认启动：web（管理后台，宿主机 8080 端口） + api（Express，SQLite/上传文件持久化到 volume）。
+# Ktor 演示服务不默认启动，需要时用：
+#   docker compose --profile ktor up -d --build
+#
+# 微信小程序端无法容器化：本地执行 pnpm --filter miniprogram build:weapp 后用微信开发者工具上传发布。
+#
+# 敏感配置通过环境变量注入，必须先复制 .env.example 为 .env 并修改（compose 会自动读取根目录 .env）。
+# API_TOKEN_SECRET / API_ADMIN_PASSWORD 不再提供兜底默认值，未配置时 compose 会直接报错退出；
+# 且容器内 NODE_ENV=production，API 启动时对危险默认值（含微信凭证缺失）做 fail-fast 检查。
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      API_PORT: 7101
+      API_DATA_DIR: /data
+      # 以下两项必须显式配置（未设置时 compose 报错退出，不再兜底到开发默认值）
+      API_TOKEN_SECRET: ${API_TOKEN_SECRET:?请在 .env 中设置 API_TOKEN_SECRET（随机长字符串），勿使用开发默认值}
+      API_ADMIN_USERNAME: ${API_ADMIN_USERNAME:-admin}
+      API_ADMIN_PASSWORD: ${API_ADMIN_PASSWORD:?请在 .env 中设置 API_ADMIN_PASSWORD（强口令），勿使用开发默认值}
+      # 微信小程序登录凭证；不配置时登录走 Mock 模式
+      WX_APPID: ${WX_APPID:-}
+      WX_SECRET: ${WX_SECRET:-}
+    volumes:
+      - api-data:/data
+    expose:
+      - "7101"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7101/api/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # 可选：Kotlin Ktor 服务（仅 /health），通过 --profile ktor 启用
+  server:
+    profiles: ["ktor"]
+    build:
+      context: ./apps/server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${KTOR_PORT:-8081}:8080"
+
+volumes:
+  api-data:

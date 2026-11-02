@@ -1,0 +1,118 @@
+@use '../../styles/variables.scss' as *;
+
+.mine-page {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding-bottom: calc(48rpx + #{$tabbar-height} + constant(safe-area-inset-bottom));
+  padding-bottom: calc(48rpx + #{$tabbar-height} + env(safe-area-inset-bottom));
+}
+
+.mine {
+  &__profile {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    padding: 40rpx 24rpx;
+    background: $card-bg;
+  }
+
+  &__avatar-btn {
+    margin: 0;
+    padding: 0;
+    line-height: normal;
+    background: transparent;
+
+    &::after {
+      border: none;
+    }
+  }
+
+  &__avatar {
+    width: 120rpx;
+    height: 120rpx;
+    border-radius: 50%;
+    overflow: hidden;
+
+    &--placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f4f4f5;
+      color: $muted;
+      font-size: 22rpx;
+    }
+  }
+
+  &__info {
+    display: flex;
+    flex-direction: column;
+    gap: 8rpx;
+  }
+
+  &__nickname {
+    font-size: 34rpx;
+    font-weight: 600;
+    color: $primary;
+  }
+
+  &__hint {
+    font-size: 22rpx;
+    color: $muted;
+  }
+
+  &__login-btn {
+    flex: 1;
+    margin: 0 48rpx 0 0;
+    background: $primary;
+    color: #fff;
+    font-size: 28rpx;
+    border-radius: 40rpx;
+  }
+
+  &__menu {
+    margin-top: 20rpx;
+    background: $card-bg;
+  }
+
+  &__menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 30rpx 24rpx;
+    font-size: 28rpx;
+    color: $primary;
+    border-bottom: 1rpx solid $border;
+  }
+
+  &__menu-label {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+  }
+
+  &__order-quick {
+    display: flex;
+    padding: 24rpx 0;
+    border-bottom: 1rpx solid $border;
+  }
+
+  &__order-quick-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8rpx;
+    font-size: 24rpx;
+    color: $muted;
+  }
+
+  &__logout {
+    margin: 40rpx 24rpx 0;
+    padding: 24rpx 0;
+    text-align: center;
+    background: $card-bg;
+    border-radius: 16rpx;
+    color: $danger;
+    font-size: 28rpx;
+  }
+}

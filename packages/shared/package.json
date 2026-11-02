@@ -1,0 +1,14 @@
+{
+  "name": "@weshop/shared",
+  "type": "module",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@weshop/eslint-config": "workspace:*",
+    "eslint": "^10.12.0"
+  }
+}

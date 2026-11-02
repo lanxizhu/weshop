@@ -1,0 +1,66 @@
+@use '../../styles/variables.scss' as *;
+
+page {
+  height: 100%;
+}
+
+.category-page {
+  display: flex;
+  height: 100%;
+  box-sizing: border-box;
+  padding-bottom: calc(#{$tabbar-height} + constant(safe-area-inset-bottom));
+  padding-bottom: calc(#{$tabbar-height} + env(safe-area-inset-bottom));
+
+  &__side {
+    width: 180rpx;
+    height: 100%;
+    flex-shrink: 0;
+    background: #fafafa;
+    border-right: 1rpx solid $border;
+    box-sizing: border-box;
+  }
+
+  &__main {
+    flex: 1;
+    height: 100%;
+  }
+
+  &__list {
+    display: flex;
+    flex-direction: column;
+    gap: 16rpx;
+    padding: 20rpx;
+  }
+}
+
+.side-item {
+  position: relative;
+  padding: 30rpx 24rpx;
+  font-size: 26rpx;
+  color: $muted;
+
+  &.is-active {
+    background: #fff;
+    color: $primary;
+    font-weight: 500;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 6rpx;
+      height: 32rpx;
+      border-radius: 4rpx;
+      background: $primary;
+    }
+  }
+}
+
+.list-state {
+  padding: 48rpx 0 64rpx;
+  text-align: center;
+  color: $muted;
+  font-size: 24rpx;
+}

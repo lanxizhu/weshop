@@ -1,0 +1,59 @@
+@use '../../styles/variables.scss' as *;
+
+.cashier {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 96rpx 48rpx;
+
+  &__order-no {
+    font-size: 24rpx;
+    color: $muted;
+  }
+
+  &__amount {
+    margin-top: 32rpx;
+    color: $price;
+    font-size: 72rpx;
+    font-weight: 700;
+  }
+
+  &__goods {
+    margin-top: 24rpx;
+    font-size: 24rpx;
+    color: $muted;
+    text-align: center;
+  }
+
+  &__pay-btn {
+    margin-top: 80rpx;
+    width: 100%;
+    padding: 24rpx 0;
+    text-align: center;
+    background: $primary;
+    color: #fff;
+    font-size: 30rpx;
+    border-radius: 44rpx;
+    box-sizing: border-box;
+
+    &.is-disabled {
+      opacity: 0.4;
+    }
+  }
+
+  &__link {
+    margin-top: 32rpx;
+    font-size: 26rpx;
+    color: $muted;
+  }
+}
+
+.cashier-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24rpx;
+  padding: 160rpx 0;
+  color: $muted;
+  font-size: 26rpx;
+}

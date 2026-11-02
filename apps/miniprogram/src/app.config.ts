@@ -1,0 +1,35 @@
+export default defineAppConfig({
+  pages: [
+    'pages/index/index',
+    'pages/category/index',
+    'pages/cart/index',
+    'pages/detail/index',
+    'pages/mine/index',
+    'pages/address/list/index',
+    'pages/address/edit/index',
+    'pages/checkout/index',
+    'pages/cashier/index',
+    'pages/order/list/index',
+    'pages/order/detail/index',
+  ],
+  window: {
+    backgroundTextStyle: 'light',
+    navigationBarBackgroundColor: '#ffffff',
+    navigationBarTitleText: 'weshop',
+    navigationBarTextStyle: 'black',
+    backgroundColor: '#f4f4f5',
+  },
+  tabBar: {
+    custom: true,
+    color: '#71717a',
+    selectedColor: '#18181b',
+    backgroundColor: '#ffffff',
+    borderStyle: 'black',
+    list: [
+      { pagePath: 'pages/index/index', text: '首页' },
+      { pagePath: 'pages/category/index', text: '分类' },
+      { pagePath: 'pages/cart/index', text: '购物车' },
+      { pagePath: 'pages/mine/index', text: '我的' },
+    ],
+  },
+})
