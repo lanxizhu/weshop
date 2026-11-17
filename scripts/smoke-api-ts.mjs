@@ -262,6 +262,23 @@ let productId
     body: JSON.stringify({ name: '无规格商品', price: 1, stock: 1 }),
   })
   check('POST 缺少规格 400', noSku.status === 400)
+
+  const decimalStock = await fetch(`${BASE}/api/products`, {
+    method: 'POST',
+    headers: adminAuth,
+    body: JSON.stringify({
+      name: '小数库存校验', category: '测试', price: 1, stock: '1.9', description: '', status: 'on', images: [],
+      skus: [{ name: '默认规格', price: 1, stock: '1.9' }],
+    }),
+  })
+  const decimalBody = await j(decimalStock)
+  check(
+    'POST 商品与 SKU 小数库存 400，不再静默截断',
+    decimalStock.status === 400 &&
+      decimalBody.errors?.includes('库存必须是不小于 0 的整数') &&
+      decimalBody.errors?.includes('规格 1 库存必须是不小于 0 的整数'),
+    decimalBody.errors?.join('；')
+  )
 }
 
 // 图片上传

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { validateOrderCreate, validatePasswordStrength, validateProduct } from './validate.js'
+import {
+  validateAddress,
+  validateCartAdd,
+  validateCartQuantity,
+  validateOrderCreate,
+  validatePasswordStrength,
+  validateProduct,
+  validateProfile,
+  validateStockDelta,
+} from './validate.js'
 
 describe('validateProduct', () => {
   it('规范化有效商品并以 SKU 为规格事实来源', () => {
@@ -58,5 +67,113 @@ describe('validatePasswordStrength', () => {
     expect(validatePasswordStrength('onlyletters')).not.toHaveLength(0)
     expect(validatePasswordStrength('12345678')).not.toHaveLength(0)
     expect(validatePasswordStrength('admin123')).toHaveLength(0)
+  })
+})
+
+
+describe('zod 请求边界校验', () => {
+  const validSku = { name: '默认规格', price: 9.9, stock: 2 }
+  const validProduct = {
+    name: '测试商品',
+    description: '',
+    category: '测试',
+    price: 9.9,
+    stock: 2,
+    status: 'on',
+    images: [],
+    skus: [validSku],
+  }
+
+  it('拒绝商品与 SKU 的小数库存及残缺数字字符串', () => {
+    expect(validateProduct({ ...validProduct, stock: '1.9' }).errors).toContain('库存必须是不小于 0 的整数')
+    expect(validateProduct({ ...validProduct, stock: '1abc' }).errors).toContain('库存必须是不小于 0 的整数')
+    expect(validateProduct({ ...validProduct, skus: [{ ...validSku, stock: '1.9' }] }).errors).toContain(
+      '规格 1 库存必须是不小于 0 的整数'
+    )
+  })
+
+  it('规范化有效数字字符串并将 SKU 价格保留两位小数', () => {
+    const result = validateProduct({
+      ...validProduct,
+      price: '9.90',
+      stock: '2',
+      skus: [{ ...validSku, price: '1.235', stock: '2' }],
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.value?.price).toBe(9.9)
+    expect(result.value?.stock).toBe(2)
+    expect(result.value?.skus[0]?.price).toBe(1.24)
+  })
+
+  it.each([null, 'text', 42, []])('非对象请求体返回校验错误而不抛异常：%j', (body) => {
+    expect(() => validateCartAdd(body)).not.toThrow()
+    expect(validateCartAdd(body).errors?.length).toBeGreaterThan(0)
+  })
+
+  it('校验库存调整为范围内的非零整数', () => {
+    expect(validateStockDelta({ delta: '-2' }).value).toEqual({ delta: -2 })
+    for (const delta of [0, 1.5, '1.5', 1000000, null, '']) {
+      expect(validateStockDelta({ delta }).errors).toEqual(['调整量必须是非零整数，且绝对值不超过 999999'])
+    }
+  })
+
+  it('规范化地址并校验手机号', () => {
+    const address = {
+      receiver: ' 张三 ',
+      phone: '13800138000',
+      province: ' 浙江省 ',
+      city: ' 杭州市 ',
+      district: ' 西湖区 ',
+      detail: ' 文一路 1 号 ',
+      is_default: 1,
+    }
+    expect(validateAddress(address).value).toEqual({
+      receiver: '张三',
+      phone: '13800138000',
+      province: '浙江省',
+      city: '杭州市',
+      district: '西湖区',
+      detail: '文一路 1 号',
+      is_default: true,
+    })
+    expect(validateAddress({ ...address, phone: '123' }).errors).toEqual(['手机号格式不正确'])
+  })
+
+  it('校验资料至少包含一个有效字段', () => {
+    expect(validateProfile({}).errors).toContain('没有需要更新的字段')
+    expect(validateProfile({ nick_name: ' 新昵称 ' }).value).toEqual({ nick_name: '新昵称' })
+    expect(validateProfile({ avatar_url: 'file:///etc/passwd' }).errors).toContain(
+      '头像地址必须是 http(s) 链接或 /uploads/ 路径'
+    )
+  })
+
+  it('校验并规范化购物车数字字段', () => {
+    expect(validateCartAdd({ product_id: '1', sku_id: '2', quantity: '3' }).value).toEqual({
+      product_id: 1,
+      sku_id: 2,
+      quantity: 3,
+    })
+    expect(validateCartAdd({ product_id: '1.5', sku_id: 0, quantity: 100 }).errors).toEqual(
+      expect.arrayContaining(['商品 ID 不合法', '规格 ID 不合法', '数量必须是 1~99 的整数'])
+    )
+    expect(validateCartQuantity({ quantity: '1.5' }).errors).toEqual(['数量必须是 1~99 的整数'])
+  })
+
+  it('校验直接购买并规范化备注与数字字段', () => {
+    const result = validateOrderCreate({
+      source: { type: 'direct', product_id: '1', sku_id: '2', quantity: '3' },
+      address_id: '4',
+      remark: ' 尽快发货 ',
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.value).toEqual({
+      source: { type: 'direct', product_id: 1, sku_id: 2, quantity: 3 },
+      address_id: 4,
+      remark: '尽快发货',
+    })
+    expect(validateOrderCreate({
+      source: { type: 'cart', item_ids: ['1.5'] },
+      address_id: 1,
+    }).errors).toContain('购物车选中项不合法')
   })
 })
