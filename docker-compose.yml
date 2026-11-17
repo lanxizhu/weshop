@@ -19,6 +19,10 @@ services:
     environment:
       API_PORT: 7101
       API_DATA_DIR: /data
+      API_ORDER_TIMEOUT_SECONDS: ${API_ORDER_TIMEOUT_SECONDS:-900}
+      API_ORDER_SWEEP_INTERVAL_SECONDS: ${API_ORDER_SWEEP_INTERVAL_SECONDS:-30}
+      API_LOG_MAX_BYTES: ${API_LOG_MAX_BYTES:-5242880}
+      API_LOG_MAX_FILES: ${API_LOG_MAX_FILES:-5}
       # 以下两项必须显式配置（未设置时 compose 报错退出，不再兜底到开发默认值）
       API_TOKEN_SECRET: ${API_TOKEN_SECRET:?请在 .env 中设置 API_TOKEN_SECRET（随机长字符串），勿使用开发默认值}
       API_ADMIN_USERNAME: ${API_ADMIN_USERNAME:-admin}

@@ -1,17 +1,8 @@
-import { lazy, Suspense } from 'react'
-import { Route, Routes } from 'react-router'
-import { AppLayout } from '@/components/app-layout'
-import { RequireAdmin } from '@/components/require-admin'
+import { Outlet, useRouter } from '@tanstack/react-router'
+import { Suspense, useEffect } from 'react'
 import { Toaster } from '@/components/ui/sonner'
 import { Spinner } from '@/components/ui/spinner'
-
-const Categories = lazy(() => import('./pages/Categories'))
-const ChangePassword = lazy(() => import('./pages/ChangePassword'))
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Home = lazy(() => import('./pages/Home'))
-const Login = lazy(() => import('./pages/Login'))
-const Orders = lazy(() => import('./pages/Orders'))
-const Users = lazy(() => import('./pages/Users'))
+import { AUTH_UNAUTHORIZED_EVENT } from '@/lib/auth'
 
 function PageLoading() {
   return (
@@ -23,26 +14,21 @@ function PageLoading() {
 }
 
 export default function App() {
+  const router = useRouter()
+
+  useEffect(() => {
+    function handleUnauthorized() {
+      const redirect = `${window.location.pathname}${window.location.search}${window.location.hash}`
+      void router.navigate({ to: '/login', search: { redirect }, replace: true })
+    }
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized)
+    return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, handleUnauthorized)
+  }, [router])
+
   return (
     <>
       <Suspense fallback={<PageLoading />}>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            element={(
-              <RequireAdmin>
-                <AppLayout />
-              </RequireAdmin>
-            )}
-          >
-            <Route path="/" element={<Home />} />
-            <Route path="/categories" element={<Categories />} />
-            <Route path="/users" element={<Users />} />
-            <Route path="/orders" element={<Orders />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/change-password" element={<ChangePassword />} />
-          </Route>
-        </Routes>
+        <Outlet />
       </Suspense>
       <Toaster position="top-center" richColors />
     </>

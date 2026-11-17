@@ -18,8 +18,9 @@ miniprogram_npm/
 logs/
 coverage/
 
-# 编译缓存
+# 编译与本地部署缓存
 .swc/
+.serverless/
 
 # 编辑器与本地覆盖配置
 .idea/

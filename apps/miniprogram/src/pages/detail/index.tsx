@@ -8,26 +8,25 @@ import { SkuPanel } from '@/components/sku-panel'
 import { assetUrl, fetchProduct } from '@/services/api'
 import { ensureLogin } from '@/services/auth'
 import { addToCart, syncCartBadge } from '@/services/cart'
+import { toast } from '@/utils/toast'
 import './index.scss'
 
 export default function Detail() {
   const { params } = useRouter()
   const id = Number(params.id)
+  const validId = Number.isInteger(id) && id > 0
   const [product, setProduct] = useState<Product | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(() => validId ? '' : '商品不存在')
+  const [loading, setLoading] = useState(validId)
 
   useEffect(() => {
-    if (!Number.isInteger(id) || id <= 0) {
-      setError('商品不存在')
-      setLoading(false)
+    if (!validId)
       return
-    }
     fetchProduct(id)
       .then(res => setProduct(res.product))
       .catch(err => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false))
-  }, [id])
+  }, [id, validId])
 
   useShareAppMessage(() => ({
     title: product?.name ?? 'weshop',
@@ -44,7 +43,7 @@ export default function Detail() {
       setPanelMode(mode)
     }
     catch (err) {
-      Taro.showToast({ title: err instanceof Error ? err.message : '请先登录', icon: 'none' })
+      toast(err, '请先登录')
     }
   }
 
@@ -74,7 +73,7 @@ export default function Detail() {
       setPanelMode(null)
     }
     catch (err) {
-      Taro.showToast({ title: err instanceof Error ? err.message : '加入失败', icon: 'none' })
+      toast(err, '加入失败')
     }
     finally {
       setAdding(false)

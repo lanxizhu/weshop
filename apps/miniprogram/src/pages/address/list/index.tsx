@@ -3,11 +3,8 @@ import { ScrollView, Text, View } from '@tarojs/components'
 import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { useEffect, useRef, useState } from 'react'
 import { deleteAddress, fetchAddresses, setDefaultAddress } from '@/services/address'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 export default function AddressList() {
   const { params } = useRouter()
@@ -31,10 +28,9 @@ export default function AddressList() {
       setAddresses(res.addresses)
     }
     catch (err) {
-      const message = err instanceof Error ? err.message : '加载失败'
-      toast(message)
+      toast(err, '加载失败')
       // 未登录 / 令牌失效：回「我的」页重新登录
-      if (message === '请先登录') {
+      if (err instanceof Error && err.message === '请先登录') {
         timerRef.current = setTimeout(() => Taro.switchTab({ url: '/pages/mine/index' }), 800)
       }
     }
@@ -51,7 +47,7 @@ export default function AddressList() {
       load()
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '设置失败')
+      toast(err, '设置失败')
     }
   }
 
@@ -80,7 +76,7 @@ export default function AddressList() {
         load()
       }
       catch (err) {
-        toast(err instanceof Error ? err.message : '删除失败')
+        toast(err, '删除失败')
       }
     })
   }

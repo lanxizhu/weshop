@@ -15,6 +15,9 @@ type OpenidResult = { openid: string } | { errors: string[] }
 /** 用 wx.login 的 code 换 openid：配置了微信凭证走 code2session，否则走开发 Mock（openid = dev_<code>） */
 async function resolveOpenid(code: string): Promise<OpenidResult> {
   if (!WX_APPID || !WX_SECRET) {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(code)) {
+      return { errors: ['Mock 登录 code 仅支持 1~64 位字母、数字、下划线和连字符'] }
+    }
     if (!mockWarned) {
       mockWarned = true
       logger.warn('未配置 WX_APPID/WX_SECRET，微信登录处于 Mock 模式（openid = dev_<code>），请勿用于生产')
@@ -43,13 +46,17 @@ authRouter.post('/login', async (req, res) => {
   const code = String(body.code ?? '').trim()
   if (!code) return res.status(400).json({ errors: ['code 不能为空'] })
 
+  let profile: { nick_name?: string, avatar_url?: string } = {}
+  if (body.nickName !== undefined || body.avatarUrl !== undefined) {
+    const profileResult = validateProfile({ nick_name: body.nickName, avatar_url: body.avatarUrl })
+    if (profileResult.errors) return res.status(400).json({ errors: profileResult.errors })
+    profile = profileResult.value
+  }
+
   const result = await resolveOpenid(code)
   if ('errors' in result) return res.status(400).json({ errors: result.errors })
 
-  const user = upsertUserByOpenid(result.openid, {
-    nick_name: typeof body.nickName === 'string' ? body.nickName : undefined,
-    avatar_url: typeof body.avatarUrl === 'string' ? body.avatarUrl : undefined,
-  })
+  const user = upsertUserByOpenid(result.openid, profile)
   if (user.status === 'disabled') return res.status(403).json({ errors: ['账号已被禁用，请联系客服'] })
   const payload: LoginResult = { token: signToken(user.id), user }
   res.json(payload)

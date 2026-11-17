@@ -27,6 +27,20 @@ export interface UserListItem extends User {
   address_count: number;
 }
 
+export interface UserListParams {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface UserListResult {
+  users: UserListItem[];
+  total: number;
+  /** 全部用户的收货地址总数，不受当前分页影响 */
+  addressTotal: number;
+  page: number;
+  pageSize: number;
+}
+
 /** 管理端用户详情（统计口径：total_spent 仅累计 paid/shipped/completed 订单金额） */
 export interface UserDetail extends User {
   address_count: number;

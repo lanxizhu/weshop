@@ -1,6 +1,6 @@
 import type { LoginResult, ProfileInput, User } from '@weshop/shared'
 import Taro from '@tarojs/taro'
-import { request, TOKEN_KEY, USER_KEY } from './request'
+import { clearSession, request, TOKEN_KEY, USER_KEY } from './request'
 
 export function getToken(): string {
   return Taro.getStorageSync(TOKEN_KEY) || ''
@@ -46,8 +46,7 @@ export async function updateProfile(input: ProfileInput): Promise<User> {
 }
 
 export function logout(): void {
-  Taro.removeStorageSync(TOKEN_KEY)
-  Taro.removeStorageSync(USER_KEY)
+  clearSession()
 }
 
 /**

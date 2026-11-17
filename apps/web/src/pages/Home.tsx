@@ -63,6 +63,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { useLatestRequest } from '@/hooks/use-latest-request'
 import {
   adjustStock,
   batchDeleteProducts,
@@ -103,7 +104,7 @@ export default function Home() {
   const [sort, setSort] = useState<ProductSortField>('updated_at')
   const [order, setOrder] = useState<SortOrder>('desc')
   const [page, setPage] = useState(1)
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set())
+  const [selected, setSelected] = useState<ReadonlySet<number>>(() => new Set())
   const [categories, setCategories] = useState<Category[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Product | null>(null)
@@ -116,16 +117,6 @@ export default function Home() {
 
   // 详情抽屉展示数据直接取自当前列表，库存调整等操作可实时同步
   const viewing = viewingId == null ? null : (products.find(p => p.id === viewingId) ?? null)
-
-  // 筛选 / 排序变化时回到第 1 页
-  useEffect(() => {
-    setPage(1)
-  }, [search, statusFilter, categoryFilter, lowStockOnly, sort, order])
-
-  // 页码 / 数据变化后清理失效的选中项
-  useEffect(() => {
-    setSelected(new Set())
-  }, [page, search, statusFilter, categoryFilter, lowStockOnly])
 
   const listParams = useMemo(
     () => ({
@@ -141,25 +132,32 @@ export default function Home() {
     [search, statusFilter, categoryFilter, lowStockOnly, sort, order, page],
   )
 
+  const runLatest = useLatestRequest()
   const load = useCallback(async () => {
+    setLoading(true)
     try {
-      const [result, s] = await Promise.all([fetchProducts(listParams), fetchStats()])
+      const latest = await runLatest(() => Promise.all([fetchProducts(listParams), fetchStats()]))
+      if (!latest)
+        return
+      const [result, s] = latest
       // 删除等操作导致当前页超出范围时回退一页
       if (result.products.length === 0 && result.total > 0 && page > 1) {
         setPage(p => Math.max(1, p - 1))
+        setSelected(new Set())
         return
       }
       setProducts(result.products)
       setTotal(result.total)
       setStats(s)
-    }
-    finally {
       setLoading(false)
     }
-  }, [listParams, page])
+    catch (error) {
+      setLoading(false)
+      throw error
+    }
+  }, [listParams, page, runLatest])
 
   useEffect(() => {
-    setLoading(true)
     const t = setTimeout(() => load().catch(e => toast.error(e.message)), 250)
     return () => clearTimeout(t)
   }, [load])
@@ -186,6 +184,8 @@ export default function Home() {
       setSort(field)
       setOrder(field === 'updated_at' ? 'desc' : 'asc')
     }
+    setPage(1)
+    setSelected(new Set())
   }
 
   async function handleCreate(input: ProductInput) {
@@ -213,12 +213,16 @@ export default function Home() {
     }
   }
 
+  function handleProductChange(product: Product) {
+    setProducts(prev => prev.map(x => (x.id === product.id ? product : x)))
+    fetchStats().then(setStats).catch(() => undefined)
+  }
+
   async function handleAdjust(p: Product, delta: number) {
     setAdjustingId(p.id)
     try {
       const { product } = await adjustStock(p.id, delta)
-      setProducts(prev => prev.map(x => (x.id === product.id ? product : x)))
-      fetchStats().then(setStats).catch(() => undefined)
+      handleProductChange(product)
     }
     catch (e) {
       toast.error(e instanceof Error ? e.message : '库存调整失败')
@@ -337,7 +341,13 @@ export default function Home() {
             <Card
               key={c.title}
               className={c.title === '低库存' ? 'cursor-pointer transition-colors hover:border-primary/50' : undefined}
-              onClick={c.title === '低库存' ? () => setLowStockOnly(v => !v) : undefined}
+              onClick={c.title === '低库存'
+                ? () => {
+                    setLowStockOnly(v => !v)
+                    setPage(1)
+                    setSelected(new Set())
+                  }
+                : undefined}
             >
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">{c.title}</CardTitle>
@@ -366,10 +376,21 @@ export default function Home() {
                 className="pl-8"
                 placeholder="搜索名称或描述…"
                 value={search}
-                onChange={e => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value)
+                  setPage(1)
+                  setSelected(new Set())
+                }}
               />
             </div>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <Select
+              value={categoryFilter}
+              onValueChange={(value) => {
+                setCategoryFilter(value)
+                setPage(1)
+                setSelected(new Set())
+              }}
+            >
               <SelectTrigger className="w-36">
                 <SelectValue />
               </SelectTrigger>
@@ -382,7 +403,14 @@ export default function Home() {
                 ))}
               </SelectContent>
             </Select>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <Select
+              value={statusFilter}
+              onValueChange={(value) => {
+                setStatusFilter(value)
+                setPage(1)
+                setSelected(new Set())
+              }}
+            >
               <SelectTrigger className="w-32">
                 <SelectValue />
               </SelectTrigger>
@@ -393,7 +421,15 @@ export default function Home() {
               </SelectContent>
             </Select>
             <div className="flex items-center gap-2">
-              <Switch id="low-stock" checked={lowStockOnly} onCheckedChange={setLowStockOnly} />
+              <Switch
+                id="low-stock"
+                checked={lowStockOnly}
+                onCheckedChange={(checked) => {
+                  setLowStockOnly(checked)
+                  setPage(1)
+                  setSelected(new Set())
+                }}
+              />
               <Label htmlFor="low-stock" className="cursor-pointer text-sm text-muted-foreground">
                 仅看低库存
               </Label>
@@ -489,10 +525,10 @@ export default function Home() {
             <TableBody>
               {loading
                 ? (
-                    Array.from({ length: 5 }).map((_, i) => (
-                      <TableRow key={i}>
-                        {Array.from({ length: 8 }).map((__, j) => (
-                          <TableCell key={j}>
+                    Array.from({ length: 5 }, (_, i) => `product-row-${i}`).map(row => (
+                      <TableRow key={row}>
+                        {Array.from({ length: 8 }, (_, i) => `product-cell-${i}`).map(cell => (
+                          <TableCell key={cell}>
                             <Skeleton className="h-5 w-full max-w-[140px]" />
                           </TableCell>
                         ))}
@@ -686,7 +722,10 @@ export default function Home() {
                 variant="outline"
                 size="sm"
                 disabled={page <= 1 || loading}
-                onClick={() => setPage(p => Math.max(1, p - 1))}
+                onClick={() => {
+                  setPage(p => Math.max(1, p - 1))
+                  setSelected(new Set())
+                }}
               >
                 上一页
               </Button>
@@ -694,7 +733,10 @@ export default function Home() {
                 variant="outline"
                 size="sm"
                 disabled={page >= totalPages || loading}
-                onClick={() => setPage(p => p + 1)}
+                onClick={() => {
+                  setPage(p => p + 1)
+                  setSelected(new Set())
+                }}
               >
                 下一页
               </Button>
@@ -723,6 +765,7 @@ export default function Home() {
           setViewingId(null)
           void handleDuplicate(p)
         }}
+        onProductChange={handleProductChange}
       />
 
       <AlertDialog open={!!deleting} onOpenChange={o => !o && setDeleting(null)}>

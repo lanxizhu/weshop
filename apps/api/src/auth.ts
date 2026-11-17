@@ -98,6 +98,17 @@ const requireAdminImpl: RequestHandler = (req, res, next) => {
 /** 管理员鉴权中间件：仅接受 role='admin' 且令牌版本未被吊销的令牌，通过后把管理员 id 写入 res.locals.adminId */
 export const requireAdmin = requireAdminImpl as GuardMiddleware
 
+/** 可选管理员身份：有效管理员令牌可查看管理端数据；匿名、用户令牌或无效令牌仍按公开访问处理 */
+export const optionalAdmin: RequestHandler = (req, res, next) => {
+  const payload = extractPayload(req)
+  const aid = payload?.role === 'admin' ? payload.aid : undefined
+  const admin = typeof aid === 'number' ? getAdminAuthById(aid) : undefined
+  if (typeof aid === 'number' && admin && payload?.tv === admin.token_version) {
+    res.locals.adminId = aid
+  }
+  next()
+}
+
 /** 宽松鉴权：用户令牌或管理员令牌任一有效即可（如小程序头像上传与管理端图片上传共用的接口）；管理员令牌同样校验 token_version */
 export const requireAnyAuth: RequestHandler = (req, res, next) => {
   const payload = extractPayload(req)

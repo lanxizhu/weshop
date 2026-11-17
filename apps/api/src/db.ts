@@ -9,8 +9,10 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 
 export const db = new DatabaseSync(DB_PATH)
 
-// 启用外键约束，product_images / cart_items / addresses 等 ON DELETE CASCADE 才会生效
+// WAL 允许读写并发；外键约束保证 ON DELETE CASCADE 生效；多实例写入冲突时短暂等待
+db.exec('PRAGMA journal_mode = WAL')
 db.exec('PRAGMA foreign_keys = ON')
+db.exec('PRAGMA busy_timeout = 5000')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS products (
@@ -154,6 +156,18 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_stock_logs_product ON stock_logs(product_id);
 `)
 
+// 高频筛选 / 排序及上传文件引用统计索引（IF NOT EXISTS 可平滑迁移存量数据库）
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_products_status_updated ON products(status, updated_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_products_updated_at ON products(updated_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+  CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_product_images_url ON product_images(url);
+  CREATE INDEX IF NOT EXISTS idx_product_skus_image ON product_skus(image);
+  CREATE INDEX IF NOT EXISTS idx_users_avatar_url ON users(avatar_url);
+  CREATE INDEX IF NOT EXISTS idx_order_items_product_image ON order_items(product_image);
+`)
+
 // ---------- 轻量迁移：categories.sort_order（兼容已有 data.db） ----------
 
 const categoryCols = db.prepare(`PRAGMA table_info(categories)`).all() as Array<{ name: string }>
@@ -242,38 +256,6 @@ try {
   throw e
 }
 
-// ---------- 种子数据（仅空表时写入） ----------
-
-const count = db.prepare('SELECT COUNT(*) AS n FROM products').get() as { n: number }
-if (count.n === 0) {
-  const seed = db.prepare(
-    `INSERT INTO products (name, category, price, stock, description, status)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  )
-  const seedSku = db.prepare(
-    `INSERT INTO product_skus (product_id, name, price, stock, image) VALUES (?, '默认规格', ?, ?, '')`
-  )
-  const rows: Array<[string, string, number, number, string, 'on' | 'off']> = [
-    ['无线降噪耳机 Pro', '数码配件', 1299, 86, '主动降噪 45dB，续航 40 小时，支持双设备连接。', 'on'],
-    ['机械键盘 87 键', '数码配件', 499, 120, 'Gasket 结构，全键热插拔，PBT 键帽。', 'on'],
-    ['便携咖啡机', '家用电器', 899, 34, '意式浓缩 19Bar 萃取，办公室与户外两用。', 'on'],
-    ['智能手环 9', '智能穿戴', 349, 0, '血氧 / 心率 / 睡眠监测，14 天长续航。（库存补货中）', 'off'],
-    ['不锈钢保温杯 500ml', '生活日用', 129, 260, '316 不锈钢内胆，24 小时保温。', 'on'],
-    ['瑜伽垫加厚 8mm', '运动户外', 159, 75, 'TPE 环保材质，防滑纹路，附背带。', 'on'],
-    ['桌面氛围灯', '生活日用', 199, 41, 'RGB 全彩，APP 控制，声控律动模式。', 'off'],
-    ['蓝牙音箱 Mini', '数码配件', 259, 58, 'IPX7 防水，20 小时续航，TWS 互联。', 'on'],
-  ]
-  for (const r of rows) {
-    const inserted = seed.run(...r)
-    seedSku.run(inserted.lastInsertRowid, r[2], r[3])
-  }
-}
-
-const catCount = db.prepare('SELECT COUNT(*) AS n FROM categories').get() as { n: number }
-if (catCount.n === 0) {
-  db.exec(`INSERT INTO categories (name) SELECT DISTINCT category FROM products WHERE category != ''`)
-}
-
 // ---------- 商品图片辅助 ----------
 
 export function getImages(productId: number | string | bigint): string[] {
@@ -281,6 +263,24 @@ export function getImages(productId: number | string | bigint): string[] {
     .prepare('SELECT url FROM product_images WHERE product_id=? ORDER BY sort_order, id')
     .all(productId)
     .map((r) => (r as { url: string }).url)
+}
+
+/** 批量读取商品图片并保持组内 sort_order / id 顺序，避免列表逐项查询 */
+export function getImagesForProducts(productIds: Array<number | string | bigint>): Map<number, string[]> {
+  const grouped = new Map<number, string[]>()
+  if (productIds.length === 0) return grouped
+  const placeholders = productIds.map(() => '?').join(',')
+  const rows = db
+    .prepare(
+      `SELECT product_id, url FROM product_images WHERE product_id IN (${placeholders})
+       ORDER BY product_id, sort_order, id`
+    )
+    .all(...productIds) as unknown as Array<{ product_id: number, url: string }>
+  for (const row of rows) {
+    const id = Number(row.product_id)
+    grouped.set(id, [...(grouped.get(id) ?? []), row.url])
+  }
+  return grouped
 }
 
 export function replaceImages(productId: number | string | bigint, images: string[]): void {
@@ -305,6 +305,24 @@ export function getSkus(productId: number | string | bigint): Sku[] {
   return db
     .prepare('SELECT * FROM product_skus WHERE product_id=? ORDER BY sort_order, id')
     .all(productId) as unknown as Sku[]
+}
+
+/** 批量读取商品规格并保持组内排序，空 id 列表不生成 IN () */
+export function getSkusForProducts(productIds: Array<number | string | bigint>): Map<number, Sku[]> {
+  const grouped = new Map<number, Sku[]>()
+  if (productIds.length === 0) return grouped
+  const placeholders = productIds.map(() => '?').join(',')
+  const rows = db
+    .prepare(
+      `SELECT * FROM product_skus WHERE product_id IN (${placeholders})
+       ORDER BY product_id, sort_order, id`
+    )
+    .all(...productIds) as unknown as Sku[]
+  for (const row of rows) {
+    const id = Number(row.product_id)
+    grouped.set(id, [...(grouped.get(id) ?? []), row])
+  }
+  return grouped
 }
 
 /**
@@ -463,7 +481,7 @@ export function createAdmin(username: string, passwordHash: string): Admin {
 
 const adminCount = db.prepare('SELECT COUNT(*) AS n FROM admins').get() as { n: number }
 if (adminCount.n === 0) {
-  createAdmin(ADMIN_USERNAME, hashPassword(ADMIN_PASSWORD))
+  createAdmin(ADMIN_USERNAME, await hashPassword(ADMIN_PASSWORD))
   logger.warn(
     `已创建初始管理员账号（username=${ADMIN_USERNAME}）；生产环境请务必通过 API_ADMIN_USERNAME/API_ADMIN_PASSWORD 覆盖默认口令`
   )

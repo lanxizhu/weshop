@@ -1,8 +1,8 @@
 import { zodResolver } from '@hookform/resolvers/zod'
+import { getRouteApi, useRouter } from '@tanstack/react-router'
 import { Package } from 'lucide-react'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
-import { useLocation, useNavigate } from 'react-router'
 import { z } from 'zod'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,9 +18,11 @@ const schema = z.object({
 
 type Values = z.infer<typeof schema>
 
+const routeApi = getRouteApi('/login')
+
 export default function Login() {
-  const navigate = useNavigate()
-  const location = useLocation()
+  const router = useRouter()
+  const redirectPath = routeApi.useSearch().redirect ?? '/'
   const [submitting, setSubmitting] = useState(false)
 
   const form = useForm<Values>({
@@ -33,8 +35,7 @@ export default function Login() {
     try {
       const { token } = await adminLogin(values.username, values.password)
       setToken(token)
-      const from = (location.state as { from?: string } | null)?.from ?? '/'
-      navigate(from, { replace: true })
+      router.history.replace(redirectPath)
     }
     catch (e) {
       form.setError('root', { message: e instanceof Error ? e.message : '登录失败，请重试' })

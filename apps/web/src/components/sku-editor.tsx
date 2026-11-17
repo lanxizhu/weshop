@@ -1,4 +1,5 @@
 import type { SkuInput } from '@weshop/shared'
+import type { EditableSku } from '@/lib/editable-sku'
 import { ArrowDown, ArrowUp, ImagePlus, Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -6,13 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { uploadImage } from '@/lib/api'
+import { createEditableSku } from '@/lib/editable-sku'
 
 /** 规格图 URL 白名单：本地 /uploads/ 路径或 http(s) 地址 */
 const SKU_IMAGE_PATTERN = /^(?:https?:\/\/|\/uploads\/)/
 
 interface SkuEditorProps {
-  value: SkuInput[]
-  onChange: (skus: SkuInput[]) => void
+  value: EditableSku[]
+  onChange: (skus: EditableSku[]) => void
 }
 
 /** 商品规格编辑器：名称 / 价格 / 库存 / 单图，支持排序与增删行 */
@@ -37,14 +39,14 @@ export function SkuEditor({ value, onChange }: SkuEditorProps) {
   }
 
   function addRow() {
-    onChange([...value, { name: '', price: 0, stock: 0, image: '' }])
+    onChange([...value, createEditableSku()])
   }
 
   return (
     <div className="space-y-3">
       {value.map((sku, index) => (
         <SkuRow
-          key={sku.id ?? `new-${index}`}
+          key={sku.editorKey}
           sku={sku}
           index={index}
           isFirst={index === 0}

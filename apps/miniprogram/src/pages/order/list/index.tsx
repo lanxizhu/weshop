@@ -3,12 +3,13 @@ import { Image, ScrollView, Text, View } from '@tarojs/components'
 import Taro, { usePullDownRefresh, useReachBottom, useRouter } from '@tarojs/taro'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fmtPrice } from '@/components/product-card'
+import { PAGE_SIZE } from '@/constants'
 import { assetUrl } from '@/services/api'
 import { fetchOrders, ORDER_STATUS_TEXT } from '@/services/order'
+import { LatestRequest } from '@/utils/latest-request'
+import { toast } from '@/utils/toast'
 import { goCashier, goOrderDetail, handleCancelOrder, handleConfirmOrder } from '../helpers'
 import './index.scss'
-
-const PAGE_SIZE = 10
 
 interface StatusTab {
   label: string
@@ -23,10 +24,6 @@ const STATUS_TABS: StatusTab[] = [
   { label: '已完成', status: 'completed' },
 ]
 
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
-
 function isStatus(value: string): value is OrderStatus | 'all' {
   return STATUS_TABS.some(tab => tab.status === value)
 }
@@ -39,31 +36,34 @@ export default function OrderList() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
-  const loadingRef = useRef(false)
+  const latestRequestRef = useRef(new LatestRequest())
+
+  useEffect(() => () => latestRequestRef.current.invalidate(), [])
 
   const load = useCallback(async (targetStatus: OrderStatus | 'all', targetPage: number, append: boolean) => {
-    if (loadingRef.current)
-      return
-    loadingRef.current = true
+    const requestId = latestRequestRef.current.next()
     if (!append)
       setLoading(true)
     try {
       const res = await fetchOrders({ status: targetStatus, page: targetPage, pageSize: PAGE_SIZE })
+      if (!latestRequestRef.current.isLatest(requestId))
+        return
       setOrders(prev => (append ? [...prev, ...res.orders] : res.orders))
       setTotal(res.total)
       setPage(res.page)
     }
     catch (err) {
-      const message = err instanceof Error ? err.message : '加载失败'
-      toast(message)
-      if (message === '请先登录') {
+      if (!latestRequestRef.current.isLatest(requestId))
+        return
+      toast(err, '加载失败')
+      if (err instanceof Error && err.message === '请先登录') {
         setOrders([])
         setTotal(0)
       }
     }
     finally {
-      loadingRef.current = false
-      setLoading(false)
+      if (latestRequestRef.current.isLatest(requestId))
+        setLoading(false)
     }
   }, [])
 
@@ -76,7 +76,7 @@ export default function OrderList() {
   })
 
   useReachBottom(() => {
-    if (orders.length < total)
+    if (!loading && orders.length < total)
       load(status, page + 1, true)
   })
 

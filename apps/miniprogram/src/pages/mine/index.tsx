@@ -7,11 +7,8 @@ import { assetUrl } from '@/services/api'
 import { fetchMe, getCachedUser, login, logout, updateProfile } from '@/services/auth'
 import { uploadFile } from '@/services/request'
 import { setTabSelected, TAB_INDEX } from '@/services/tabbar'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 export default function Mine() {
   const [user, setUser] = useState<User | null>(() => getCachedUser())
@@ -40,7 +37,7 @@ export default function Mine() {
       Taro.showToast({ title: '登录成功', icon: 'success' })
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '登录失败')
+      toast(err, '登录失败')
     }
     finally {
       setBusy(false)
@@ -60,7 +57,7 @@ export default function Mine() {
       setUser(await updateProfile({ avatar_url: url }))
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '头像上传失败')
+      toast(err, '头像上传失败')
     }
     finally {
       Taro.hideLoading()
@@ -76,7 +73,7 @@ export default function Mine() {
       Taro.showToast({ title: '昵称已更新', icon: 'success' })
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '更新失败')
+      toast(err, '更新失败')
     }
   }
 

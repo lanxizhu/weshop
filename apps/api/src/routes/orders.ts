@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Address, Order, OrderItem, OrderStatus } from '@weshop/shared'
 import { requireAuth } from '../auth.js'
+import { ORDER_TIMEOUT_SECONDS } from '../config.js'
 import { db, inTransaction, syncProductDerivedFields, writeStockLog } from '../db.js'
 import { validateOrderCreate } from '../validate.js'
 
@@ -13,6 +14,21 @@ const ORDER_STATUSES: OrderStatus[] = ['pending', 'paid', 'shipped', 'completed'
 
 export function getOrderItems(orderId: number | string | bigint): OrderItem[] {
   return db.prepare('SELECT * FROM order_items WHERE order_id=? ORDER BY id').all(orderId) as unknown as OrderItem[]
+}
+
+/** 批量读取订单明细并保持每组内 id 顺序，供订单列表与导出复用 */
+export function getOrderItemsForOrders(orderIds: Array<number | string | bigint>): Map<number, OrderItem[]> {
+  const grouped = new Map<number, OrderItem[]>()
+  if (orderIds.length === 0) return grouped
+  const placeholders = orderIds.map(() => '?').join(',')
+  const rows = db
+    .prepare(`SELECT * FROM order_items WHERE order_id IN (${placeholders}) ORDER BY order_id, id`)
+    .all(...orderIds) as unknown as OrderItem[]
+  for (const row of rows) {
+    const id = Number(row.order_id)
+    grouped.set(id, [...(grouped.get(id) ?? []), row])
+  }
+  return grouped
 }
 
 function withItems(order: Omit<Order, 'items'>): Order {
@@ -36,21 +52,23 @@ function generateOrderNo(): string {
   throw new Error('订单号生成失败，请重试')
 }
 
-/** 取消订单并回补库存（须在事务内调用）：按明细快照的 sku_id 回补，规格已删则回补到该商品现存任一规格 */
+/** 取消订单并回补库存（须在事务内调用）：只回补明细快照的原规格，规格已删时记录未回补 */
 export function cancelOrderAndRestock(orderId: number, reason: string, operator = ''): void {
   const order = db.prepare('SELECT order_no FROM orders WHERE id=?').get(orderId) as { order_no: string } | undefined
   const orderNo = order?.order_no ?? String(orderId)
   const items = getOrderItems(orderId)
   const touchedProducts = new Set<number>()
   for (const item of items) {
-    // 优先回补到下单时的规格；规格已被删除时退到该商品现存任一规格
-    const sku =
-      (db.prepare('SELECT id, name, stock FROM product_skus WHERE id=?').get(item.sku_id) as
+    const sku = item.sku_id > 0
+      ? db.prepare('SELECT id, name, stock FROM product_skus WHERE id=?').get(item.sku_id) as
         | { id: number; name: string; stock: number }
-        | undefined) ??
-      (db.prepare('SELECT id, name, stock FROM product_skus WHERE product_id=? ORDER BY sort_order, id LIMIT 1').get(item.product_id) as
+        | undefined
+      : db.prepare(
+          `SELECT id, name, stock FROM product_skus
+           WHERE product_id=? AND (SELECT COUNT(*) FROM product_skus WHERE product_id=?) = 1 LIMIT 1`
+        ).get(item.product_id, item.product_id) as
         | { id: number; name: string; stock: number }
-        | undefined)
+        | undefined
     if (sku) {
       db.prepare(`UPDATE product_skus SET stock=stock+?, updated_at=datetime('now','localtime') WHERE id=?`).run(
         item.quantity,
@@ -67,7 +85,7 @@ export function cancelOrderAndRestock(orderId: number, reason: string, operator 
         operator,
       })
     } else {
-      // 商品已没有任何规格：无法回补，但仍记一条流水说明
+      // 原规格不可用或历史多规格订单无法确定原规格：不跨规格回补，但记录流水说明
       writeStockLog({
         product_id: item.product_id,
         sku_id: item.sku_id,
@@ -75,7 +93,7 @@ export function cancelOrderAndRestock(orderId: number, reason: string, operator 
         delta: item.quantity,
         stock_after: 0,
         reason: 'cancel',
-        ref: `${orderNo}（规格已删除，库存未回补）`,
+        ref: `${orderNo}（原规格不可用，库存未回补）`,
         operator,
       })
     }
@@ -86,6 +104,28 @@ export function cancelOrderAndRestock(orderId: number, reason: string, operator 
     `UPDATE orders SET status='cancelled', cancelled_at=datetime('now','localtime'), cancel_reason=?,
      updated_at=datetime('now','localtime') WHERE id=?`
   ).run(reason, orderId)
+}
+
+/** 关闭超时未支付订单并回补库存；条件认领保证重复扫描或并发实例不会重复回补 */
+export function closeExpiredOrders(): number {
+  const expired = db
+    .prepare(
+      `SELECT id FROM orders
+       WHERE status='pending' AND datetime(created_at) <= datetime('now','localtime', ?)
+       ORDER BY id`
+    )
+    .all(`-${ORDER_TIMEOUT_SECONDS} seconds`) as unknown as Array<{ id: number }>
+  let closed = 0
+  for (const { id } of expired) {
+    const changed = inTransaction(() => {
+      const claimed = db.prepare(`UPDATE orders SET status='cancelled' WHERE id=? AND status='pending'`).run(id)
+      if (claimed.changes === 0) return false
+      cancelOrderAndRestock(id, '超时未支付，系统自动取消', 'system:order-timeout')
+      return true
+    })
+    if (changed) closed += 1
+  }
+  return closed
 }
 
 /** 下单：事务内校验商品与规格 → 原子扣 SKU 库存 → 写订单与快照 → 写流水 → 同步派生字段 → 清理购物车 */
@@ -207,7 +247,8 @@ ordersRouter.get('/', (req, res) => {
     .prepare(`SELECT * FROM orders WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
     .all(...params, pageSize, (page - 1) * pageSize) as unknown as Array<Omit<Order, 'items'>>
 
-  res.json({ orders: rows.map(withItems), total, page, pageSize })
+  const itemsByOrder = getOrderItemsForOrders(rows.map((o) => o.id))
+  res.json({ orders: rows.map((o) => ({ ...o, items: itemsByOrder.get(o.id) ?? [] })), total, page, pageSize })
 })
 
 /** 本人订单详情 */
@@ -225,11 +266,21 @@ ordersRouter.post('/:id/pay', (req, res) => {
   if (order.status === 'paid') return res.json({ order })
   if (order.status !== 'pending') return res.status(400).json({ errors: ['当前订单状态不可支付'] })
 
-  db.prepare(`UPDATE orders SET status='paid', paid_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE id=?`).run(order.id)
+  const changed = db
+    .prepare(
+      `UPDATE orders SET status='paid', paid_at=datetime('now','localtime'), updated_at=datetime('now','localtime')
+       WHERE id=? AND user_id=? AND status='pending'`
+    )
+    .run(order.id, uid)
+  if (changed.changes === 0) {
+    const current = getOwnedOrder(uid, order.id)
+    if (current?.status === 'paid') return res.json({ order: current })
+    return res.status(400).json({ errors: ['当前订单状态不可支付'] })
+  }
   res.json({ order: getOwnedOrder(uid, order.id) })
 })
 
-/** 取消订单：仅待支付可取消，事务内回补库存 */
+/** 取消订单：仅待支付可取消，条件认领后在同一事务内回补库存 */
 ordersRouter.post('/:id/cancel', (req, res) => {
   const uid = res.locals.uid as number
   const order = getOwnedOrder(uid, req.params.id)
@@ -237,7 +288,15 @@ ordersRouter.post('/:id/cancel', (req, res) => {
   if (order.status !== 'pending') return res.status(400).json({ errors: ['当前订单状态不可取消'] })
 
   const reason = String((req.body as Record<string, unknown> | null)?.reason ?? '').trim() || '用户取消'
-  inTransaction(() => cancelOrderAndRestock(order.id, reason, `user:${uid}`))
+  const claimed = inTransaction(() => {
+    const changed = db
+      .prepare(`UPDATE orders SET status='cancelled' WHERE id=? AND user_id=? AND status='pending'`)
+      .run(order.id, uid)
+    if (changed.changes === 0) return false
+    cancelOrderAndRestock(order.id, reason, `user:${uid}`)
+    return true
+  })
+  if (!claimed) return res.status(400).json({ errors: ['当前订单状态不可取消'] })
   res.json({ order: getOwnedOrder(uid, order.id) })
 })
 
@@ -248,6 +307,12 @@ ordersRouter.post('/:id/confirm', (req, res) => {
   if (!order) return res.status(404).json({ errors: ['订单不存在'] })
   if (order.status !== 'shipped') return res.status(400).json({ errors: ['当前订单状态不可确认收货'] })
 
-  db.prepare(`UPDATE orders SET status='completed', completed_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE id=?`).run(order.id)
+  const changed = db
+    .prepare(
+      `UPDATE orders SET status='completed', completed_at=datetime('now','localtime'), updated_at=datetime('now','localtime')
+       WHERE id=? AND user_id=? AND status='shipped'`
+    )
+    .run(order.id, uid)
+  if (changed.changes === 0) return res.status(400).json({ errors: ['当前订单状态不可确认收货'] })
   res.json({ order: getOwnedOrder(uid, order.id) })
 })

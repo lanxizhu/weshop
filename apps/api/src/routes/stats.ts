@@ -37,8 +37,8 @@ function getOverview(): DashboardOverview {
       `SELECT
          COUNT(*) AS totalOrders,
          COALESCE(ROUND(SUM(CASE WHEN status IN ${VALID_STATUSES} THEN total_amount END), 2), 0) AS totalRevenue,
-         SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) AS pendingShipment,
-         SUM(CASE WHEN date(created_at) = date('now','localtime') THEN 1 ELSE 0 END) AS todayOrders,
+         COALESCE(SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END), 0) AS pendingShipment,
+         COALESCE(SUM(CASE WHEN date(created_at) = date('now','localtime') THEN 1 ELSE 0 END), 0) AS todayOrders,
          COALESCE(ROUND(SUM(CASE WHEN status IN ${VALID_STATUSES} AND date(created_at) = date('now','localtime') THEN total_amount END), 2), 0) AS todayRevenue
        FROM orders`
     )

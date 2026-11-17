@@ -1,3 +1,4 @@
+import type { IProjectConfig } from '@tarojs/taro/types/compile'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -12,7 +13,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url))
 const sharedSrc = fs.realpathSync(path.resolve(dirname, '../node_modules/@weshop/shared/src'))
 
 export default defineConfig(async (merge) => {
-  const baseConfig = {
+  const baseConfig: IProjectConfig = {
     projectName: 'weshop-miniprogram',
     date: '2026-10-15',
     designWidth: 750,

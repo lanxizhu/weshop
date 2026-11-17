@@ -1,8 +1,8 @@
 /**
  * 演示数据种子脚本（幂等，可重复执行）
  *
- * 用法：pnpm --filter api seed:demo
- * 可用 API_DB_PATH 覆盖目标数据库（默认 apps/api/server/data.db）。
+ * 用法：pnpm seed（等价于 pnpm --filter api seed）
+ * 可用 API_DB_PATH 覆盖目标数据库（默认 apps/api/server/data.db）；空库会自动初始化表结构。
  *
  * 行为：
  * - 按分类名 / 商品名 / 规格名判重，已存在则跳过，不会产生重复数据
@@ -11,46 +11,24 @@
  * - 对 3 个存量商品做规格扩展（默认规格改名 + 新增规格）
  */
 
-import path from 'node:path'
 import process from 'node:process'
-import { DatabaseSync } from 'node:sqlite'
-
-const DATA_DIR = process.env.API_DATA_DIR ?? path.resolve(import.meta.dirname, '../server')
-const DB_PATH = process.env.API_DB_PATH ?? path.join(DATA_DIR, 'data.db')
-
-const db = new DatabaseSync(DB_PATH)
-
-// ---------- 与 apps/api/src/db.ts 保持一致的工具函数 ----------
-
-function syncProductDerivedFields(productId) {
-  db.prepare(
-    `UPDATE products SET
-       price = COALESCE((SELECT MIN(price) FROM product_skus WHERE product_id=?), price),
-       stock = COALESCE((SELECT SUM(stock) FROM product_skus WHERE product_id=?), stock),
-       updated_at=datetime('now','localtime')
-     WHERE id=?`,
-  ).run(productId, productId, productId)
-}
-
-function writeStockLog(entry) {
-  db.prepare(
-    `INSERT INTO stock_logs (product_id, sku_id, sku_name, delta, stock_after, reason, ref, operator)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    entry.product_id,
-    entry.sku_id,
-    entry.sku_name,
-    entry.delta,
-    entry.stock_after,
-    entry.reason,
-    entry.ref ?? '',
-    entry.operator ?? '',
-  )
-}
+import { db, syncProductDerivedFields, writeStockLog } from '../src/db.js'
 
 // ---------- 数据定义 ----------
 
-const NEW_CATEGORIES = ['食品饮料', '美妆个护', '母婴用品', '图书文创', '家居家装', '宠物用品']
+const NEW_CATEGORIES = [
+  '数码配件',
+  '家用电器',
+  '智能穿戴',
+  '生活日用',
+  '运动户外',
+  '食品饮料',
+  '美妆个护',
+  '母婴用品',
+  '图书文创',
+  '家居家装',
+  '宠物用品',
+]
 
 const img = (seed, i = 1) => `https://picsum.photos/seed/weshop-${seed}-${i}/600/600`
 
@@ -59,6 +37,79 @@ const img = (seed, i = 1) => `https://picsum.photos/seed/weshop-${seed}-${i}/600
  * skus: [名称, 价格, 库存]
  */
 const NEW_PRODUCTS = [
+  // 基础演示商品（原先由 API 启动时自动写入，现统一由显式 seed 命令创建）
+  {
+    name: '无线降噪耳机 Pro',
+    category: '数码配件',
+    status: 'on',
+    seed: 'headphones-pro',
+    imageCount: 0,
+    description: '主动降噪 45dB，续航 40 小时，支持双设备连接。',
+    skus: [['默认规格', 1299, 86]],
+  },
+  {
+    name: '机械键盘 87 键',
+    category: '数码配件',
+    status: 'on',
+    seed: 'keyboard-87',
+    imageCount: 0,
+    description: 'Gasket 结构，全键热插拔，PBT 键帽。',
+    skus: [['默认规格', 499, 120]],
+  },
+  {
+    name: '便携咖啡机',
+    category: '家用电器',
+    status: 'on',
+    seed: 'coffee-machine',
+    imageCount: 0,
+    description: '意式浓缩 19Bar 萃取，办公室与户外两用。',
+    skus: [['默认规格', 899, 34]],
+  },
+  {
+    name: '智能手环 9',
+    category: '智能穿戴',
+    status: 'off',
+    seed: 'band-9',
+    imageCount: 0,
+    description: '血氧 / 心率 / 睡眠监测，14 天长续航。（库存补货中）',
+    skus: [['默认规格', 349, 0]],
+  },
+  {
+    name: '不锈钢保温杯 500ml',
+    category: '生活日用',
+    status: 'on',
+    seed: 'thermos-500',
+    imageCount: 0,
+    description: '316 不锈钢内胆，24 小时保温。',
+    skus: [['默认规格', 129, 260]],
+  },
+  {
+    name: '瑜伽垫加厚 8mm',
+    category: '运动户外',
+    status: 'on',
+    seed: 'yoga-mat',
+    imageCount: 0,
+    description: 'TPE 环保材质，防滑纹路，附背带。',
+    skus: [['默认规格', 159, 75]],
+  },
+  {
+    name: '桌面氛围灯',
+    category: '生活日用',
+    status: 'off',
+    seed: 'desk-light',
+    imageCount: 0,
+    description: 'RGB 全彩，APP 控制，声控律动模式。',
+    skus: [['默认规格', 199, 41]],
+  },
+  {
+    name: '蓝牙音箱 Mini',
+    category: '数码配件',
+    status: 'on',
+    seed: 'speaker-mini',
+    imageCount: 0,
+    description: 'IPX7 防水，20 小时续航，TWS 互联。',
+    skus: [['默认规格', 259, 58]],
+  },
   // 数码配件
   {
     name: '无线鼠标 M3',

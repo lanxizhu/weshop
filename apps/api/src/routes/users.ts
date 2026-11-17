@@ -1,20 +1,26 @@
 import { Router } from 'express'
 import type { Address, Order, UserDetail, UserListItem } from '@weshop/shared'
 import { db, getUserById } from '../db.js'
-import { getOrderItems } from './orders.js'
+import { getOrderItemsForOrders } from './orders.js'
 
 // 鉴权由 app.ts 挂载点的 requireAdmin 统一处理
 export const usersRouter = Router()
 
-/** 管理端用户列表（按注册倒序，附收货地址数量） */
-usersRouter.get('/', (_req, res) => {
+/** 管理端用户列表（按注册倒序分页，附收货地址数量与全量统计） */
+usersRouter.get('/', (req, res) => {
+  const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1)
+  const pageSize = Math.min(50, Math.max(1, Number.parseInt(String(req.query.pageSize ?? '10'), 10) || 10))
+
+  const { total, addressTotal } = db
+    .prepare('SELECT (SELECT COUNT(*) FROM users) AS total, (SELECT COUNT(*) FROM addresses) AS addressTotal')
+    .get() as { total: number, addressTotal: number }
   const users = db
     .prepare(
       `SELECT u.*, (SELECT COUNT(*) FROM addresses a WHERE a.user_id = u.id) AS address_count
-       FROM users u ORDER BY u.id DESC`
+       FROM users u ORDER BY u.id DESC LIMIT ? OFFSET ?`
     )
-    .all() as unknown as UserListItem[]
-  res.json({ users })
+    .all(pageSize, (page - 1) * pageSize) as unknown as UserListItem[]
+  res.json({ users, total, addressTotal, page, pageSize })
 })
 
 /** 用户详情：基础信息 + 地址数 / 订单数 / 累计消费（paid/shipped/completed）/ 最近下单时间 + 地址列表 */
@@ -47,7 +53,8 @@ usersRouter.get('/:id/orders', (req, res) => {
   const rows = db
     .prepare('SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?')
     .all(req.params.id, pageSize, (page - 1) * pageSize) as unknown as Array<Omit<Order, 'items'>>
-  res.json({ orders: rows.map((o) => ({ ...o, items: getOrderItems(o.id) })), total, page, pageSize })
+  const itemsByOrder = getOrderItemsForOrders(rows.map((o) => o.id))
+  res.json({ orders: rows.map((o) => ({ ...o, items: itemsByOrder.get(o.id) ?? [] })), total, page, pageSize })
 })
 
 /** 禁用 / 恢复用户 */

@@ -6,13 +6,10 @@ import { useEffect, useState } from 'react'
 import { fmtPrice } from '@/components/product-card'
 import { fetchAddresses } from '@/services/address'
 import { assetUrl, fetchProduct } from '@/services/api'
-import { fetchCart } from '@/services/cart'
+import { fetchCart, syncCartBadge } from '@/services/cart'
 import { createOrder } from '@/services/order'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 /** 确认订单页统一展示用的结算行 */
 interface CheckoutLine {
@@ -33,6 +30,7 @@ export default function Checkout() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [remainingCartQuantity, setRemainingCartQuantity] = useState(0)
 
   const cartItemIds = (params.items ?? '').split(',').map(Number).filter(n => Number.isInteger(n) && n > 0)
   const directProductId = Number(params.product_id)
@@ -65,6 +63,8 @@ export default function Checkout() {
       const selected = res.items.filter(item => cartItemIds.includes(item.id))
       if (selected.length === 0)
         throw new Error('结算商品不存在，请返回购物车重新选择')
+      const selectedQuantity = selected.reduce((sum, item) => sum + item.quantity, 0)
+      setRemainingCartQuantity(Math.max(0, res.total_quantity - selectedQuantity))
       setLines(selected.map(item => ({
         product_id: item.product_id,
         sku_id: item.sku_id,
@@ -139,10 +139,12 @@ export default function Checkout() {
         address_id: address.id,
         ...(trimmed ? { remark: trimmed.slice(0, MAX_ORDER_REMARK_LENGTH) } : {}),
       })
+      if (source.type === 'cart')
+        syncCartBadge(remainingCartQuantity)
       Taro.redirectTo({ url: `/pages/cashier/index?id=${order.id}` })
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '下单失败')
+      toast(err, '下单失败')
       setSubmitting(false)
     }
   }

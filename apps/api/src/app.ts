@@ -1,7 +1,8 @@
 import express from 'express'
 import { requireAdmin } from './auth.js'
-import { UPLOAD_DIR } from './config.js'
+import { TRUST_PROXY, UPLOAD_DIR } from './config.js'
 import { errorHandler, httpLogger } from './logger.js'
+import { loginRateLimit, orderCreateRateLimit, uploadRateLimit } from './rate-limit.js'
 import { addressesRouter } from './routes/addresses.js'
 import { adminAuthRouter } from './routes/admin-auth.js'
 import { adminOrdersRouter } from './routes/admin-orders.js'
@@ -19,9 +20,15 @@ import { cleanupOrphanUploads } from './utils/file-cleanup.js'
 export function createApp() {
   const app = express()
 
+  app.set('trust proxy', TRUST_PROXY)
   app.use(httpLogger)
   app.use(express.json())
   app.use('/uploads', express.static(UPLOAD_DIR))
+
+  // 只限制高风险写操作；订单列表、详情与静态上传文件读取不计数
+  app.post(['/api/auth/login', '/api/admin/auth/login'], loginRateLimit)
+  app.post('/api/orders', orderCreateRateLimit)
+  app.post('/api/uploads', uploadRateLimit)
 
   app.use('/api/products', productsRouter)
   app.get('/api/stats', requireAdmin, statsHandler)
@@ -37,8 +44,8 @@ export function createApp() {
   app.use('/api/admin/orders', requireAdmin, adminOrdersRouter)
   app.use('/api/admin/stats', requireAdmin, statsRouter)
   // 清理 UPLOAD_DIR 中全库无引用的孤儿图片，返回 { deleted, freedBytes }
-  app.post('/api/admin/uploads/cleanup', requireAdmin, (_req, res) => {
-    res.json(cleanupOrphanUploads())
+  app.post('/api/admin/uploads/cleanup', requireAdmin, async (_req, res) => {
+    res.json(await cleanupOrphanUploads())
   })
 
   app.use((_req, res) => {

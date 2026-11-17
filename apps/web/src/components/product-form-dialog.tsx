@@ -1,4 +1,5 @@
-import type { Category, Product, ProductInput, SkuInput } from '@weshop/shared'
+import type { Category, Product, ProductInput } from '@weshop/shared'
+import type { EditableSku } from '@/lib/editable-sku'
 import { ImagePlus, Link2, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -25,6 +26,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { fetchCategories, uploadImage } from '@/lib/api'
+import { createEditableSku } from '@/lib/editable-sku'
 
 const FALLBACK_CATEGORIES = ['数码配件', '家用电器', '智能穿戴', '生活日用', '运动户外', '食品饮料', '其他']
 
@@ -36,46 +38,39 @@ interface Props {
   onSubmit: (input: ProductInput) => Promise<void>
 }
 
-export function ProductFormDialog({ open, onOpenChange, initial, onSubmit }: Props) {
-  const [form, setForm] = useState<ProductInput>(emptyForm())
+export function ProductFormDialog(props: Props) {
+  if (!props.open)
+    return null
+  return <ProductFormContent key={props.initial?.id ?? 'new'} {...props} />
+}
+
+function ProductFormContent({ open, onOpenChange, initial, onSubmit }: Props) {
+  const [form, setForm] = useState<ProductInput>(() => initial
+    ? {
+        name: initial.name,
+        category: initial.category,
+        price: initial.price,
+        stock: initial.stock,
+        description: initial.description,
+        status: initial.status,
+        images: initial.images,
+        skus: initial.skus,
+      }
+    : emptyForm())
   const [categories, setCategories] = useState<Category[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [images, setImages] = useState<string[]>([])
-  const [skus, setSkus] = useState<SkuInput[]>([emptySku()])
+  const [images, setImages] = useState<string[]>(() => initial?.images ?? [])
+  const [skus, setSkus] = useState<EditableSku[]>(() => initial?.skus.map(createEditableSku) ?? [createEditableSku()])
   const [urlInput, setUrlInput] = useState('')
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (open) {
-      setError('')
-      setUrlInput('')
-      setImages(initial?.images ?? [])
-      // Sku → SkuInput：剥离 sort_order / 时间戳等只读字段；新建时给一行空规格
-      setSkus(
-        initial?.skus?.map(s => ({ id: s.id, name: s.name, price: s.price, stock: s.stock, image: s.image }))
-        ?? [emptySku()],
-      )
-      setForm(
-        initial
-          ? {
-              name: initial.name,
-              category: initial.category,
-              price: initial.price,
-              stock: initial.stock,
-              description: initial.description,
-              status: initial.status,
-              images: initial.images,
-              skus: initial.skus,
-            }
-          : emptyForm(),
-      )
-      fetchCategories()
-        .then(({ categories }) => setCategories(categories))
-        .catch(() => setCategories([]))
-    }
-  }, [open, initial])
+    fetchCategories()
+      .then(({ categories }) => setCategories(categories))
+      .catch(() => setCategories([]))
+  }, [])
 
   // 现有分类 + 兜底默认项，保证历史商品的分类总能选到
   const categoryOptions = [
@@ -143,7 +138,13 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSubmit }: Pro
         price: derivedPrice,
         stock: derivedStock,
         images,
-        skus: skus.map(s => ({ ...s, name: s.name.trim() })),
+        skus: skus.map(s => ({
+          ...(s.id !== undefined ? { id: s.id } : {}),
+          name: s.name.trim(),
+          price: s.price,
+          stock: s.stock,
+          image: s.image,
+        })),
       })
       onOpenChange(false)
     }
@@ -217,7 +218,7 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSubmit }: Pro
             {images.length > 0 && (
               <div className="grid grid-cols-5 gap-2">
                 {images.map((url, i) => (
-                  <div key={`${url}-${i}`} className="group relative aspect-square overflow-hidden rounded-md border bg-muted">
+                  <div key={url} className="group relative aspect-square overflow-hidden rounded-md border bg-muted">
                     <img
                       src={url}
                       alt={`商品图 ${i + 1}`}
@@ -315,8 +316,4 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSubmit }: Pro
 
 function emptyForm(): ProductInput {
   return { name: '', category: '其他', price: 0, stock: 0, description: '', status: 'on', images: [], skus: [] }
-}
-
-function emptySku(): SkuInput {
-  return { name: '', price: 0, stock: 0, image: '' }
 }

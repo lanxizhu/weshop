@@ -4,11 +4,8 @@ import Taro from '@tarojs/taro'
 import { PHONE_REGEX } from '@weshop/shared'
 import { useEffect, useRef, useState } from 'react'
 import { createAddress, fetchAddresses, updateAddress } from '@/services/address'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 export default function AddressEdit() {
   // 无 id 为新增，有 id 为编辑
@@ -45,7 +42,7 @@ export default function AddressEdit() {
         setDetail(addr.detail)
         setIsDefault(addr.is_default === 1)
       })
-      .catch(err => toast(err instanceof Error ? err.message : '加载失败'))
+      .catch(err => toast(err, '加载失败'))
   }, [id])
 
   async function handleSubmit() {
@@ -76,7 +73,7 @@ export default function AddressEdit() {
       timerRef.current = setTimeout(() => Taro.navigateBack(), 600)
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '保存失败')
+      toast(err, '保存失败')
     }
     finally {
       setSaving(false)

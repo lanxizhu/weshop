@@ -1,12 +1,17 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import type { ErrorRequestHandler, RequestHandler } from 'express'
+import { RotatingLogFile } from './utils/rotating-log-file.js'
+import { sanitizeRequestUrl } from './utils/sanitize-url.js'
 
-const LOG_DIR = path.resolve(import.meta.dirname, '../logs')
-const LOG_FILE = path.join(LOG_DIR, 'api.log')
+function positiveInteger(raw: string | undefined, fallback: number): number {
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : fallback
+}
 
-fs.mkdirSync(LOG_DIR, { recursive: true })
-const stream = fs.createWriteStream(LOG_FILE, { flags: 'a' })
+const LOG_DIR = process.env.API_LOG_DIR ?? path.resolve(import.meta.dirname, '../logs')
+const LOG_MAX_BYTES = positiveInteger(process.env.API_LOG_MAX_BYTES, 5 * 1024 * 1024)
+const LOG_MAX_FILES = positiveInteger(process.env.API_LOG_MAX_FILES, 5)
+const logFile = new RotatingLogFile({ directory: LOG_DIR, maxBytes: LOG_MAX_BYTES, maxFiles: LOG_MAX_FILES })
 
 const COLORS = {
   info: '\x1b[32m', // green
@@ -21,7 +26,7 @@ type Meta = Record<string, unknown>
 
 function write(level: Level, message: string, meta?: Meta) {
   const entry = { time: new Date().toISOString(), level, message, ...(meta ?? {}) }
-  stream.write(JSON.stringify(entry) + '\n')
+  logFile.write(JSON.stringify(entry) + '\n')
 
   const color = COLORS[level]
   const metaStr = meta && Object.keys(meta).length ? ` ${COLORS.gray}${JSON.stringify(meta)}${COLORS.reset}` : ''
@@ -40,9 +45,10 @@ export const httpLogger: RequestHandler = (req, res, next) => {
   res.on('finish', () => {
     const ms = Number(process.hrtime.bigint() - start) / 1e6
     const level: Level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'
-    write(level, `${req.method} ${req.originalUrl} ${res.statusCode}`, {
+    const url = sanitizeRequestUrl(req.originalUrl)
+    write(level, `${req.method} ${url} ${res.statusCode}`, {
       method: req.method,
-      url: req.originalUrl,
+      url,
       status: res.statusCode,
       ms: Math.round(ms * 10) / 10,
       ip: req.ip,
@@ -53,9 +59,10 @@ export const httpLogger: RequestHandler = (req, res, next) => {
 
 /** 统一错误处理中间件：记录错误堆栈并返回一致的 JSON 响应 */
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
-  logger.error(`${req.method} ${req.originalUrl} 未处理异常`, {
+  const url = sanitizeRequestUrl(req.originalUrl)
+  logger.error(`${req.method} ${url} 未处理异常`, {
     method: req.method,
-    url: req.originalUrl,
+    url,
     error: err.message,
     stack: err.stack,
   })

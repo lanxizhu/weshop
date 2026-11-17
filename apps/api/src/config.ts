@@ -13,6 +13,25 @@ export const UPLOAD_DIR = process.env.API_UPLOAD_DIR ?? path.join(DATA_DIR, 'upl
 
 export const PORT = Number(process.env.API_PORT ?? 7101)
 
+/** 信任反向代理层数或地址：默认信任一层，使限流与日志在 nginx 后取得真实客户端 IP */
+const rawTrustProxy = (process.env.API_TRUST_PROXY ?? '1').trim()
+export const TRUST_PROXY: number | string | boolean = /^\d+$/.test(rawTrustProxy)
+  ? Number(rawTrustProxy)
+  : rawTrustProxy === 'true'
+    ? true
+    : rawTrustProxy === 'false'
+      ? false
+      : rawTrustProxy
+
+function positiveSeconds(raw: string | undefined, fallback: number): number {
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/** 待支付订单保留时长与扫描周期；自包含测试会缩短到数秒 */
+export const ORDER_TIMEOUT_SECONDS = positiveSeconds(process.env.API_ORDER_TIMEOUT_SECONDS, 15 * 60)
+export const ORDER_SWEEP_INTERVAL_SECONDS = positiveSeconds(process.env.API_ORDER_SWEEP_INTERVAL_SECONDS, 30)
+
 /** 微信小程序登录凭证：未配置时 /api/auth/login 走 Mock 模式（openid = dev_<code>） */
 export const WX_APPID = process.env.WX_APPID ?? ''
 export const WX_SECRET = process.env.WX_SECRET ?? ''

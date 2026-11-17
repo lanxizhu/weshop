@@ -1,5 +1,6 @@
 import type { DashboardStats, OrderStatus } from '@weshop/shared'
 import type { ChartConfig } from '@/components/ui/chart'
+import { Link } from '@tanstack/react-router'
 import {
   ClipboardList,
   PackageOpen,
@@ -9,7 +10,6 @@ import {
   Wallet,
 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router'
 import {
   Bar,
   CartesianGrid,
@@ -26,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useLatestRequest } from '@/hooks/use-latest-request'
 import { fetchDashboard, onServerRecover } from '@/lib/api'
 
 const fmtPrice = (n: number) => `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`
@@ -48,23 +49,32 @@ const statusConfig = Object.fromEntries(
   Object.entries(STATUS_META).map(([k, v]) => [k, { label: v.label, color: v.color }]),
 ) as ChartConfig
 
+const TOP_SKELETONS = Array.from({ length: 5 }, (_, i) => `top-${i}`)
+const CATEGORY_SKELETONS = Array.from({ length: 4 }, (_, i) => `category-${i}`)
+
 export default function Dashboard() {
   const [days, setDays] = useState<7 | 30>(7)
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
 
+  const runLatest = useLatestRequest()
   const load = useCallback(async () => {
-    const data = await fetchDashboard(days)
-    setStats(data)
-    setLoading(false)
-  }, [days])
+    setLoading(true)
+    try {
+      const data = await runLatest(() => fetchDashboard(days))
+      if (!data)
+        return
+      setStats(data)
+      setLoading(false)
+    }
+    catch (error) {
+      setLoading(false)
+      throw error
+    }
+  }, [days, runLatest])
 
   useEffect(() => {
-    setLoading(true)
-    load().catch((e) => {
-      setLoading(false)
-      toast.error(e instanceof Error ? e.message : '加载失败')
-    })
+    load().catch(e => toast.error(e instanceof Error ? e.message : '加载失败'))
   }, [load])
 
   // 服务从故障中恢复后，自动刷新数据
@@ -116,7 +126,7 @@ export default function Dashboard() {
           </Card>
         ))}
         {/* 待发货是运营动作入口：点击直达订单管理待发货列表，形成「看数据 → 去处理」闭环 */}
-        <Link to="/orders?status=paid" className="block transition-transform hover:-translate-y-0.5">
+        <Link to="/orders" search={{ status: 'paid' }} className="block transition-transform hover:-translate-y-0.5">
           <Card className="h-full border-blue-200 bg-blue-50/50 dark:border-blue-900 dark:bg-blue-950/30">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-blue-700 dark:text-blue-400">
@@ -260,7 +270,7 @@ export default function Dashboard() {
             {loading || !stats
               ? (
                   <div className="space-y-3">
-                    {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
+                    {TOP_SKELETONS.map(key => <Skeleton key={key} className="h-10 w-full" />)}
                   </div>
                 )
               : stats.topProducts.length === 0
@@ -312,7 +322,7 @@ export default function Dashboard() {
             {loading || !stats
               ? (
                   <div className="space-y-3">
-                    {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+                    {CATEGORY_SKELETONS.map(key => <Skeleton key={key} className="h-8 w-full" />)}
                   </div>
                 )
               : stats.categorySales.length === 0

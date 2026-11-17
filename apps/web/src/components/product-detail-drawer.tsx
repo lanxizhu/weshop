@@ -58,25 +58,30 @@ interface ProductDetailDrawerProps {
   onOpenChange: (open: boolean) => void
   onEdit: (p: Product) => void
   onDuplicate: (p: Product) => void
+  onProductChange: (p: Product) => void
 }
 
-export function ProductDetailDrawer({
+export function ProductDetailDrawer(props: ProductDetailDrawerProps) {
+  if (!props.open || !props.product)
+    return null
+  return <ProductDetailContent key={props.product.id} {...props} />
+}
+
+function ProductDetailContent({
   product,
   open,
   onOpenChange,
   onEdit,
   onDuplicate,
+  onProductChange,
 }: ProductDetailDrawerProps) {
   const [fresh, setFresh] = useState<Product | null>(null)
   const [tab, setTab] = useState<'detail' | 'logs'>('detail')
   const [logs, setLogs] = useState<StockLog[] | null>(null)
   const [adjustingSkuId, setAdjustingSkuId] = useState<number | null>(null)
 
-  // 列表数据可能陈旧，打开抽屉时拉取最新详情；失败则静默回退到列表数据
+  // 列表数据可能陈旧，挂载抽屉时拉取最新详情；失败则静默回退到列表数据
   useEffect(() => {
-    setFresh(null)
-    setTab('detail')
-    setLogs(null)
     if (!open || !product)
       return
     let cancelled = false
@@ -119,6 +124,7 @@ export function ProductDetailDrawer({
     try {
       const { product } = await adjustSkuStock(p.id, skuId, delta)
       setFresh(product)
+      onProductChange(product)
       setLogs(null) // 流水已变化，下次切到 tab 时重新加载
     }
     catch (e) {
@@ -167,7 +173,7 @@ export function ProductDetailDrawer({
                       <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto">
                         {p.images.map((url, i) => (
                           <img
-                            key={`${url}-${i}`}
+                            key={url}
                             src={url}
                             alt={`${p.name} 图片 ${i + 1}`}
                             className="aspect-square w-full shrink-0 snap-center rounded-lg border object-cover"
@@ -263,8 +269,8 @@ export function ProductDetailDrawer({
                 {logs === null
                   ? (
                       <div className="space-y-2 py-2">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <Skeleton key={i} className="h-12 w-full" />
+                        {Array.from({ length: 5 }, (_, i) => `log-skeleton-${i}`).map(key => (
+                          <Skeleton key={key} className="h-12 w-full" />
                         ))}
                       </div>
                     )

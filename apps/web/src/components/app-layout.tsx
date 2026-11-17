@@ -1,24 +1,23 @@
+import { Link, Outlet, useNavigate } from '@tanstack/react-router'
 import { KeyRound, LogOut, Package } from 'lucide-react'
-import { Link, NavLink, Outlet, useNavigate } from 'react-router'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { Button } from '@/components/ui/button'
 import { clearToken } from '@/lib/auth'
-import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { to: '/dashboard', label: '数据统计', end: false },
-  { to: '/', label: '商品管理', end: true },
-  { to: '/categories', label: '分类管理', end: false },
-  { to: '/users', label: '用户管理', end: false },
-  { to: '/orders', label: '订单管理', end: false },
-]
+  { to: '/dashboard', label: '数据统计', exact: false },
+  { to: '/', label: '商品管理', exact: true },
+  { to: '/categories', label: '分类管理', exact: false },
+  { to: '/users', label: '用户管理', exact: false },
+  { to: '/orders', label: '订单管理', exact: false },
+] as const
 
 export function AppLayout() {
   const navigate = useNavigate()
 
   function logout() {
     clearToken()
-    navigate('/login', { replace: true })
+    navigate({ to: '/login', replace: true })
   }
 
   return (
@@ -31,20 +30,16 @@ export function AppLayout() {
           </div>
           <nav className="order-3 flex w-full flex-wrap items-center gap-1 lg:order-2 lg:w-auto">
             {NAV_ITEMS.map(item => (
-              <NavLink
+              <Link
                 key={item.to}
                 to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  cn(
-                    'whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors',
-                    isActive
-                      ? 'bg-primary/10 font-medium text-primary'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                  )}
+                activeOptions={{ exact: item.exact }}
+                className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm transition-colors"
+                activeProps={{ className: 'bg-primary/10 font-medium text-primary' }}
+                inactiveProps={{ className: 'text-muted-foreground hover:bg-muted hover:text-foreground' }}
               >
                 {item.label}
-              </NavLink>
+              </Link>
             ))}
           </nav>
           <div className="order-2 ml-auto flex shrink-0 items-center gap-2 lg:order-3 lg:ml-0">

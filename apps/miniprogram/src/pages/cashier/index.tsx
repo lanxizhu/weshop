@@ -4,31 +4,26 @@ import Taro, { useRouter } from '@tarojs/taro'
 import { useEffect, useState } from 'react'
 import { fmtPrice } from '@/components/product-card'
 import { fetchOrder, payOrder } from '@/services/order'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 export default function Cashier() {
   const { params } = useRouter()
   const id = Number(params.id)
+  const validId = Number.isInteger(id) && id > 0
   const [order, setOrder] = useState<Order | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(() => validId ? '' : '订单不存在')
+  const [loading, setLoading] = useState(validId)
   const [paying, setPaying] = useState(false)
 
   useEffect(() => {
-    if (!Number.isInteger(id) || id <= 0) {
-      setError('订单不存在')
-      setLoading(false)
+    if (!validId)
       return
-    }
     fetchOrder(id)
       .then(res => setOrder(res.order))
       .catch(err => setError(err instanceof Error ? err.message : '加载失败'))
       .finally(() => setLoading(false))
-  }, [id])
+  }, [id, validId])
 
   function goDetail() {
     Taro.redirectTo({ url: `/pages/order/detail/index?id=${id}` })
@@ -44,7 +39,7 @@ export default function Cashier() {
       setTimeout(goDetail, 800)
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '支付失败')
+      toast(err, '支付失败')
       setPaying(false)
     }
   }

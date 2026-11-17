@@ -17,6 +17,28 @@ allowBuilds:
 publicHoistPattern:
   - "@tarojs/*"
 
+# 安全修复：上游仍锁定含漏洞版本时按实际父包收窄覆盖，避免影响其他构建链
+overrides:
+  "express@5>body-parser": "2.4.0"
+  "express@4>body-parser": "1.20.9"
+  "@tarojs/components>swiper": "12.1.2"
+  "esbuild": "0.28.2"
+  "webpack": "5.104.1"
+  "webpack-dev-server": "5.2.6"
+  "webpack-dev-server>webpack-dev-middleware": "7.4.5"
+  "selfsigned>node-forge": "1.4.1"
+  "sockjs>uuid": "11.1.1"
+  "eslint>minimatch": "11.0.1"
+  "@eslint/config-array>minimatch": "11.0.1"
+  "@typescript-eslint/typescript-estree>minimatch": "11.0.1"
+  "stylus>glob": "14.0.2"
+  "follow-redirects": "1.16.2"
+  "joi": "17.13.9"
+  "qs": "6.16.1"
+  "fast-uri": "3.1.9"
+  "postcss-selector-parser": "6.1.5"
+  "katex": "0.18.2"
+
 # 这些库未把 @types/react 声明为 peer/dep，类型解析会落到 .pnpm 提升区的 React 18 类型上，
 # 与 web 端的 React 19 类型冲突。显式补 peer 声明，让它们跟随使用方（web）的 @types/react@19。
 packageExtensions:

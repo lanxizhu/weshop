@@ -1,10 +1,21 @@
 import type { CartListResult } from '@weshop/shared'
-import { request } from './request'
+import Taro from '@tarojs/taro'
+import { request, TOKEN_KEY } from './request'
 import { setCartBadge } from './tabbar'
 
 /** 同步购物车 tab 角标；任何改动购物车的页面在拿到最新购物车后都应调用 */
 export function syncCartBadge(totalQuantity: number) {
   setCartBadge(totalQuantity)
+}
+
+export function initializeCartBadge(): void {
+  if (!Taro.getStorageSync(TOKEN_KEY)) {
+    syncCartBadge(0)
+    return
+  }
+  fetchCart()
+    .then(res => syncCartBadge(res.total_quantity))
+    .catch(() => {})
 }
 
 export function fetchCart(): Promise<CartListResult> {

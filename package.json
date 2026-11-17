@@ -12,8 +12,9 @@
     "build:web": "pnpm --filter web build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm --filter api typecheck && pnpm --filter miniprogram typecheck",
-    "test": "node scripts/test-api.mjs",
-    "smoke": "node scripts/smoke-api-ts.mjs"
+    "test": "pnpm --filter api test && pnpm --filter miniprogram test && pnpm --filter web test && node scripts/test-api.mjs",
+    "smoke": "node scripts/smoke-api-ts.mjs",
+    "seed": "pnpm --filter api seed"
   },
   "keywords": [],
   "author": "",

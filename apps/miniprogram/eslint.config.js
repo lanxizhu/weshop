@@ -12,8 +12,8 @@ export default weshop(
     },
   },
   {
-    // babel.config.js 是 CommonJS
-    files: ['babel.config.js'],
+    // Babel 配置保留 CommonJS，供 Taro 加载
+    files: ['babel.config.cjs'],
     languageOptions: { sourceType: 'commonjs' },
   },
 )

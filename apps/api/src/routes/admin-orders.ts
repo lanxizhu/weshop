@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import type { AdminOrder, Order, OrderStatus } from '@weshop/shared'
 import { db, inTransaction } from '../db.js'
-import { cancelOrderAndRestock, getOrderItems } from './orders.js'
+import { escapeCsvCell } from '../utils/csv.js'
+import { cancelOrderAndRestock, getOrderItems, getOrderItemsForOrders } from './orders.js'
 
 // 鉴权由 app.ts 挂载点的 requireAdmin 统一处理
 export const adminOrdersRouter = Router()
@@ -58,7 +59,8 @@ adminOrdersRouter.get('/', (req, res) => {
     )
     .all(...params, pageSize, (page - 1) * pageSize) as unknown as AdminOrderRow[]
 
-  res.json({ orders: rows.map((o) => ({ ...o, items: getOrderItems(o.id) })), total, page, pageSize })
+  const itemsByOrder = getOrderItemsForOrders(rows.map((o) => o.id))
+  res.json({ orders: rows.map((o) => ({ ...o, items: itemsByOrder.get(o.id) ?? [] })), total, page, pageSize })
 })
 
 /** 导出当前过滤条件下的订单为 CSV（带 BOM，Excel 打开不乱码；最多 5000 条） */
@@ -71,10 +73,11 @@ adminOrdersRouter.get('/export.csv', (req, res) => {
     )
     .all(...params) as unknown as AdminOrderRow[]
 
-  const esc = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`
+  const esc = escapeCsvCell
+  const itemsByOrder = getOrderItemsForOrders(rows.map((o) => o.id))
   const header = '订单号,买家昵称,收货人,电话,收货地址,商品摘要,件数,金额,状态,备注,下单时间,支付时间,发货时间,完成时间,取消原因'
   const lines = rows.map((o) => {
-    const items = getOrderItems(o.id)
+    const items = itemsByOrder.get(o.id) ?? []
     const summary = items.map((i) => (i.sku_name ? `${i.product_name}[${i.sku_name}] x${i.quantity}` : i.product_name)).join('; ')
     const quantity = items.reduce((s, i) => s + i.quantity, 0)
     return [
@@ -115,11 +118,17 @@ adminOrdersRouter.post('/:id/ship', (req, res) => {
   if (!order) return res.status(404).json({ errors: ['订单不存在'] })
   if (order.status !== 'paid') return res.status(400).json({ errors: ['仅待发货订单可发货'] })
 
-  db.prepare(`UPDATE orders SET status='shipped', shipped_at=datetime('now','localtime'), updated_at=datetime('now','localtime') WHERE id=?`).run(order.id)
+  const changed = db
+    .prepare(
+      `UPDATE orders SET status='shipped', shipped_at=datetime('now','localtime'), updated_at=datetime('now','localtime')
+       WHERE id=? AND status='paid'`
+    )
+    .run(order.id)
+  if (changed.changes === 0) return res.status(400).json({ errors: ['仅待发货订单可发货'] })
   res.json({ order: getAdminOrder(order.id) })
 })
 
-/** 商家取消：pending/paid → cancelled，事务内回补库存 */
+/** 商家取消：pending/paid → cancelled，条件认领后在同一事务内回补库存 */
 adminOrdersRouter.post('/:id/cancel', (req, res) => {
   const order = getAdminOrder(req.params.id)
   if (!order) return res.status(404).json({ errors: ['订单不存在'] })
@@ -128,6 +137,14 @@ adminOrdersRouter.post('/:id/cancel', (req, res) => {
   }
 
   const reason = String((req.body as Record<string, unknown> | null)?.reason ?? '').trim() || '商家取消'
-  inTransaction(() => cancelOrderAndRestock(order.id, reason, `admin:${res.locals.adminId}`))
+  const claimed = inTransaction(() => {
+    const changed = db
+      .prepare(`UPDATE orders SET status='cancelled' WHERE id=? AND status IN ('pending','paid')`)
+      .run(order.id)
+    if (changed.changes === 0) return false
+    cancelOrderAndRestock(order.id, reason, `admin:${res.locals.adminId}`)
+    return true
+  })
+  if (!claimed) return res.status(400).json({ errors: ['当前订单状态不可取消'] })
   res.json({ order: getAdminOrder(order.id) })
 })

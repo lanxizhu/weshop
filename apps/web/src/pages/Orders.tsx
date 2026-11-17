@@ -1,7 +1,7 @@
 import type { AdminOrder, OrderStatus } from '@weshop/shared'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { Download, Eye, Search } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -35,6 +35,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useLatestRequest } from '@/hooks/use-latest-request'
 import {
   cancelAdminOrder,
   downloadOrdersCsv,
@@ -48,6 +49,9 @@ const fmtPrice = (n: number) => `¥${n.toLocaleString('zh-CN', { minimumFraction
 const fmtTime = (s: string | null) => (s ? s.slice(0, 16) : '-')
 
 const PAGE_SIZE = 10
+const SKELETON_ROWS = Array.from({ length: 5 }, (_, i) => `order-row-${i}`)
+const SKELETON_CELLS = Array.from({ length: 8 }, (_, i) => `order-cell-${i}`)
+const DETAIL_SKELETONS = Array.from({ length: 6 }, (_, i) => `detail-${i}`)
 
 const STATUS_META: Record<OrderStatus, { label: string, badge: 'default' | 'secondary' | 'destructive' | 'outline', className?: string }> = {
   pending: { label: '待支付', badge: 'outline', className: 'border-amber-300 text-amber-600' },
@@ -76,20 +80,22 @@ function itemCount(o: AdminOrder): number {
   return o.items.reduce((s, i) => s + i.quantity, 0)
 }
 
+const routeApi = getRouteApi('/authenticated/orders')
+
 export default function Orders() {
   const [orders, setOrders] = useState<AdminOrder[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const navigate = useNavigate({ from: '/orders' })
   // 状态筛选同步到 URL（?status=paid），支持从数据统计页等入口直达筛选结果
-  const [searchParams, setSearchParams] = useSearchParams()
-  const statusParam = searchParams.get('status') ?? 'all'
-  const statusFilter = (FILTER_TABS.some(t => t.value === statusParam) ? statusParam : 'all') as OrderStatus | 'all'
-  const setStatusFilter = (v: OrderStatus | 'all') => {
-    setSearchParams(v === 'all' ? {} : { status: v }, { replace: true })
-  }
+  const statusFilter = routeApi.useSearch().status ?? 'all'
   const [keyword, setKeyword] = useState('')
   const [appliedKeyword, setAppliedKeyword] = useState('')
   const [page, setPage] = useState(1)
+  const setStatusFilter = (v: OrderStatus | 'all') => {
+    setPage(1)
+    navigate({ search: v === 'all' ? {} : { status: v }, replace: true })
+  }
 
   const [viewingId, setViewingId] = useState<number | null>(null)
   const [detail, setDetail] = useState<AdminOrder | null>(null)
@@ -100,34 +106,35 @@ export default function Orders() {
   const [acting, setActing] = useState(false)
   const [exporting, setExporting] = useState(false)
 
-  // 筛选 / 搜索变化时回到第 1 页
-  useEffect(() => {
-    setPage(1)
-  }, [statusFilter, appliedKeyword])
-
+  const runLatest = useLatestRequest()
   const load = useCallback(async () => {
-    const result = await fetchAdminOrders({
-      status: statusFilter,
-      keyword: appliedKeyword || undefined,
-      page,
-      pageSize: PAGE_SIZE,
-    })
-    // 操作导致当前页超出范围时回退一页
-    if (result.orders.length === 0 && result.total > 0 && page > 1) {
-      setPage(p => Math.max(1, p - 1))
-      return
+    setLoading(true)
+    try {
+      const result = await runLatest(() => fetchAdminOrders({
+        status: statusFilter,
+        keyword: appliedKeyword || undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      }))
+      if (!result)
+        return
+      // 操作导致当前页超出范围时回退一页
+      if (result.orders.length === 0 && result.total > 0 && page > 1) {
+        setPage(p => Math.max(1, p - 1))
+        return
+      }
+      setOrders(result.orders)
+      setTotal(result.total)
+      setLoading(false)
     }
-    setOrders(result.orders)
-    setTotal(result.total)
-    setLoading(false)
-  }, [statusFilter, appliedKeyword, page])
+    catch (error) {
+      setLoading(false)
+      throw error
+    }
+  }, [statusFilter, appliedKeyword, page, runLatest])
 
   useEffect(() => {
-    setLoading(true)
-    load().catch((e) => {
-      setLoading(false)
-      toast.error(e instanceof Error ? e.message : '加载失败')
-    })
+    load().catch(e => toast.error(e instanceof Error ? e.message : '加载失败'))
   }, [load])
 
   // 服务从故障中恢复后，自动刷新数据
@@ -142,17 +149,35 @@ export default function Orders() {
   useEffect(() => {
     if (viewingId == null)
       return
+    let cancelled = false
+    fetchAdminOrder(viewingId)
+      .then(({ order }) => {
+        if (!cancelled)
+          setDetail(order)
+      })
+      .catch((e) => {
+        if (!cancelled)
+          toast.error(e instanceof Error ? e.message : '加载订单详情失败')
+      })
+      .finally(() => {
+        if (!cancelled)
+          setDetailLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [viewingId])
+
+  function openDetail(id: number) {
     setDetail(null)
     setDetailLoading(true)
-    fetchAdminOrder(viewingId)
-      .then(({ order }) => setDetail(order))
-      .catch(e => toast.error(e instanceof Error ? e.message : '加载订单详情失败'))
-      .finally(() => setDetailLoading(false))
-  }, [viewingId])
+    setViewingId(id)
+  }
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault()
     setAppliedKeyword(keyword.trim())
+    setPage(1)
   }
 
   async function handleExport() {
@@ -270,10 +295,10 @@ export default function Orders() {
             <TableBody>
               {loading
                 ? (
-                    Array.from({ length: 5 }).map((_, i) => (
-                      <TableRow key={i}>
-                        {Array.from({ length: 8 }).map((__, j) => (
-                          <TableCell key={j}>
+                    SKELETON_ROWS.map(row => (
+                      <TableRow key={row}>
+                        {SKELETON_CELLS.map(cell => (
+                          <TableCell key={cell}>
                             <Skeleton className="h-5 w-full max-w-[140px]" />
                           </TableCell>
                         ))}
@@ -305,7 +330,7 @@ export default function Orders() {
                               variant="ghost"
                               size="icon"
                               title="查看详情"
-                              onClick={() => setViewingId(o.id)}
+                              onClick={() => openDetail(o.id)}
                             >
                               <Eye className="h-4 w-4" />
                             </Button>
@@ -366,8 +391,8 @@ export default function Orders() {
           {detailLoading || !detail
             ? (
                 <div className="space-y-3">
-                  {Array.from({ length: 6 }).map((_, i) => (
-                    <Skeleton key={i} className="h-5 w-full" />
+                  {DETAIL_SKELETONS.map(key => (
+                    <Skeleton key={key} className="h-5 w-full" />
                   ))}
                 </div>
               )

@@ -1,13 +1,14 @@
 import type { Category, Product } from '@weshop/shared'
 import { Input, ScrollView, View } from '@tarojs/components'
 import Taro, { useDidShow, usePullDownRefresh, useReachBottom } from '@tarojs/taro'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProductCard } from '@/components/product-card'
+import { PAGE_SIZE } from '@/constants'
 import { fetchCategories, fetchProducts } from '@/services/api'
 import { setTabSelected, TAB_INDEX } from '@/services/tabbar'
+import { LatestRequest } from '@/utils/latest-request'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-const PAGE_SIZE = 10
 
 export default function Index() {
   useDidShow(() => setTabSelected(TAB_INDEX.home))
@@ -19,6 +20,9 @@ export default function Index() {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const latestRequestRef = useRef(new LatestRequest())
+
+  useEffect(() => () => latestRequestRef.current.invalidate(), [])
 
   useEffect(() => {
     fetchCategories()
@@ -34,6 +38,7 @@ export default function Index() {
 
   const load = useCallback(
     async (pageNum: number, replace: boolean) => {
+      const requestId = latestRequestRef.current.next()
       setLoading(true)
       try {
         const res = await fetchProducts({
@@ -43,15 +48,19 @@ export default function Index() {
           page: pageNum,
           pageSize: PAGE_SIZE,
         })
+        if (!latestRequestRef.current.isLatest(requestId))
+          return
         setTotal(res.total)
         setPage(pageNum)
         setProducts(prev => (replace ? res.products : [...prev, ...res.products]))
       }
       catch (err) {
-        Taro.showToast({ title: err instanceof Error ? err.message : '加载失败', icon: 'none' })
+        if (latestRequestRef.current.isLatest(requestId))
+          toast(err, '加载失败')
       }
       finally {
-        setLoading(false)
+        if (latestRequestRef.current.isLatest(requestId))
+          setLoading(false)
       }
     },
     [keyword, activeCategory],

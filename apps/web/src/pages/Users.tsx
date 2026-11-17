@@ -18,12 +18,20 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { UserDetailDrawer } from '@/components/user-detail-drawer'
+import { useLatestRequest } from '@/hooks/use-latest-request'
 import { fetchUsers, onServerRecover, setUserStatus } from '@/lib/api'
 
 const fmtTime = (s: string) => s?.slice(0, 16) ?? '-'
 
+const PAGE_SIZE = 10
+const SKELETON_ROWS = Array.from({ length: 4 }, (_, i) => `user-row-${i}`)
+const SKELETON_CELLS = Array.from({ length: 7 }, (_, i) => `user-cell-${i}`)
+
 export default function Users() {
   const [users, setUsers] = useState<UserListItem[]>([])
+  const [total, setTotal] = useState(0)
+  const [addressTotal, setAddressTotal] = useState(0)
+  const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [viewingId, setViewingId] = useState<number | null>(null)
   const [statusTarget, setStatusTarget] = useState<UserListItem | null>(null)
@@ -32,17 +40,31 @@ export default function Users() {
   // 详情抽屉展示数据直接取自当前列表，禁用/恢复等操作可实时同步
   const viewing = viewingId == null ? null : (users.find(u => u.id === viewingId) ?? null)
 
+  const runLatest = useLatestRequest()
   const load = useCallback(async () => {
-    const { users } = await fetchUsers()
-    setUsers(users)
-    setLoading(false)
-  }, [])
+    setLoading(true)
+    try {
+      const result = await runLatest(() => fetchUsers({ page, pageSize: PAGE_SIZE }))
+      if (!result)
+        return
+      // 用户数量变化导致当前页超出范围时回退一页
+      if (result.users.length === 0 && result.total > 0 && page > 1) {
+        setPage(p => Math.max(1, p - 1))
+        return
+      }
+      setUsers(result.users)
+      setTotal(result.total)
+      setAddressTotal(result.addressTotal)
+      setLoading(false)
+    }
+    catch (error) {
+      setLoading(false)
+      throw error
+    }
+  }, [page, runLatest])
 
   useEffect(() => {
-    load().catch((e) => {
-      setLoading(false)
-      toast.error(e instanceof Error ? e.message : '加载失败')
-    })
+    load().catch(e => toast.error(e instanceof Error ? e.message : '加载失败'))
   }, [load])
 
   // 服务从故障中恢复后，自动刷新数据
@@ -72,7 +94,7 @@ export default function Users() {
     }
   }
 
-  const totalAddresses = users.reduce((sum, u) => sum + u.address_count, 0)
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   return (
     <>
@@ -84,7 +106,7 @@ export default function Users() {
               <UsersIcon className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-2xl font-bold">{users.length}</div>}
+              {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-2xl font-bold">{total}</div>}
             </CardContent>
           </Card>
           <Card>
@@ -93,13 +115,13 @@ export default function Users() {
               <MapPin className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-2xl font-bold">{totalAddresses}</div>}
+              {loading ? <Skeleton className="h-8 w-20" /> : <div className="text-2xl font-bold">{addressTotal}</div>}
             </CardContent>
           </Card>
         </div>
 
         <p className="text-sm text-muted-foreground">
-          小程序端微信登录（开发环境为 Mock）后自动注册；此处展示全部用户及其收货地址数量。点击行可查看用户详情。
+          小程序端微信登录（开发环境为 Mock）后自动注册；此处分页展示用户及其收货地址数量。点击行可查看用户详情。
         </p>
 
         <Card>
@@ -118,10 +140,10 @@ export default function Users() {
             <TableBody>
               {loading
                 ? (
-                    Array.from({ length: 4 }).map((_, i) => (
-                      <TableRow key={i}>
-                        {Array.from({ length: 7 }).map((__, j) => (
-                          <TableCell key={j}>
+                    SKELETON_ROWS.map(row => (
+                      <TableRow key={row}>
+                        {SKELETON_CELLS.map(cell => (
+                          <TableCell key={cell}>
                             <Skeleton className="h-5 w-full max-w-[140px]" />
                           </TableCell>
                         ))}
@@ -181,6 +203,39 @@ export default function Users() {
                     )}
             </TableBody>
           </Table>
+          <div className="flex items-center justify-between border-t px-4 py-3">
+            <span className="text-sm text-muted-foreground">
+              共
+              {' '}
+              {total}
+              {' '}
+              条 · 第
+              {' '}
+              {page}
+              /
+              {totalPages}
+              {' '}
+              页
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page <= 1 || loading}
+                onClick={() => setPage(p => Math.max(1, p - 1))}
+              >
+                上一页
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page >= totalPages || loading}
+                onClick={() => setPage(p => p + 1)}
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
         </Card>
       </main>
 

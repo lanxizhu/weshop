@@ -4,17 +4,25 @@ import type { IconNode } from 'lucide-react'
 // 按需登记：用到的图标才加进注册表，避免全量打包（小程序包体限制）。
 import { __iconNode as chevronRight } from 'lucide-react/dist/esm/icons/chevron-right'
 import { __iconNode as clipboardList } from 'lucide-react/dist/esm/icons/clipboard-list'
+import { __iconNode as house } from 'lucide-react/dist/esm/icons/house'
+import { __iconNode as layoutGrid } from 'lucide-react/dist/esm/icons/layout-grid'
 import { __iconNode as mapPin } from 'lucide-react/dist/esm/icons/map-pin'
 import { __iconNode as packageIcon } from 'lucide-react/dist/esm/icons/package'
+import { __iconNode as shoppingCart } from 'lucide-react/dist/esm/icons/shopping-cart'
 import { __iconNode as truck } from 'lucide-react/dist/esm/icons/truck'
+import { __iconNode as userRound } from 'lucide-react/dist/esm/icons/user-round'
 import { __iconNode as wallet } from 'lucide-react/dist/esm/icons/wallet'
 
 export const ICON_NODES = {
   'chevron-right': chevronRight,
   'clipboard-list': clipboardList,
+  house,
+  'layout-grid': layoutGrid,
   'map-pin': mapPin,
   'package': packageIcon,
+  'shopping-cart': shoppingCart,
   truck,
+  'user-round': userRound,
   wallet,
 } satisfies Record<string, IconNode>
 

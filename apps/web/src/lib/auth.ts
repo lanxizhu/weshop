@@ -2,6 +2,8 @@
 
 const TOKEN_KEY = 'weshop_admin_token'
 
+export const AUTH_UNAUTHORIZED_EVENT = 'weshop:unauthorized'
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }

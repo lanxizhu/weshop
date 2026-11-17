@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useLatestRequest } from '@/hooks/use-latest-request'
 import {
   createCategory,
   deleteCategory,
@@ -44,11 +45,20 @@ export default function Categories() {
   const [migrateTo, setMigrateTo] = useState('')
   const [reordering, setReordering] = useState(false)
 
+  const runLatest = useLatestRequest()
   const load = useCallback(async () => {
-    const { categories } = await fetchCategories()
-    setCategories(categories)
-    setLoading(false)
-  }, [])
+    try {
+      const result = await runLatest(() => fetchCategories())
+      if (!result)
+        return
+      setCategories(result.categories)
+      setLoading(false)
+    }
+    catch (error) {
+      setLoading(false)
+      throw error
+    }
+  }, [runLatest])
 
   useEffect(() => {
     load().catch((e) => {
@@ -189,10 +199,10 @@ export default function Categories() {
           <TableBody>
             {loading
               ? (
-                  Array.from({ length: 4 }).map((_, i) => (
-                    <TableRow key={i}>
-                      {Array.from({ length: 5 }).map((__, j) => (
-                        <TableCell key={j}>
+                  Array.from({ length: 4 }, (_, i) => `category-row-${i}`).map(row => (
+                    <TableRow key={row}>
+                      {Array.from({ length: 5 }, (_, i) => `category-cell-${i}`).map(cell => (
+                        <TableCell key={cell}>
                           <Skeleton className="h-5 w-full max-w-[140px]" />
                         </TableCell>
                       ))}

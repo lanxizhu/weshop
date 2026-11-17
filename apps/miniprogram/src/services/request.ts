@@ -1,4 +1,6 @@
 import Taro from '@tarojs/taro'
+import { HandledToastError, toast } from '@/utils/toast'
+import { setCartBadge } from './tabbar'
 
 export const TOKEN_KEY = 'weshop_token'
 export const USER_KEY = 'weshop_user'
@@ -8,6 +10,12 @@ type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 export interface RequestOptions {
   method?: HttpMethod
   data?: Record<string, unknown>
+}
+
+export function clearSession(): void {
+  Taro.removeStorageSync(TOKEN_KEY)
+  Taro.removeStorageSync(USER_KEY)
+  setCartBadge(0)
 }
 
 /**
@@ -38,12 +46,14 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new Error('服务连接失败，恢复后请重试')
   }
   if (res.statusCode === 401) {
-    Taro.removeStorageSync(TOKEN_KEY)
-    Taro.removeStorageSync(USER_KEY)
+    clearSession()
     throw new Error('请先登录')
   }
-  if (res.statusCode === 403)
-    Taro.showToast({ title: '账号已被禁用', icon: 'none' })
+  if (res.statusCode === 403) {
+    const message = '账号已被禁用'
+    toast(message)
+    throw new HandledToastError(message)
+  }
   if (res.statusCode >= 200 && res.statusCode < 300)
     return res.data as T
   const errors = (res.data as { errors?: unknown }).errors
@@ -75,12 +85,14 @@ export async function uploadFile<T>(path: string, filePath: string, name = 'file
     throw new Error('服务连接失败，恢复后请重试')
   }
   if (res.statusCode === 401) {
-    Taro.removeStorageSync(TOKEN_KEY)
-    Taro.removeStorageSync(USER_KEY)
+    clearSession()
     throw new Error('请先登录')
   }
-  if (res.statusCode === 403)
-    Taro.showToast({ title: '账号已被禁用', icon: 'none' })
+  if (res.statusCode === 403) {
+    const message = '账号已被禁用'
+    toast(message)
+    throw new HandledToastError(message)
+  }
   let body: T | { errors?: unknown }
   try {
     body = JSON.parse(res.data) as T | { errors?: unknown }

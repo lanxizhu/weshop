@@ -17,17 +17,18 @@ import type {
   StockLog,
   User,
   UserDetail,
-  UserListItem,
+  UserListParams,
+  UserListResult,
 } from '@weshop/shared'
 import type { AxiosRequestConfig } from 'axios'
 import axios from 'axios'
-import { clearToken, getToken } from './auth'
+import { AUTH_UNAUTHORIZED_EVENT, clearToken, getToken } from './auth'
 
 // ---------- Axios 实例 ----------
 // 统一 baseURL、JSON 头与超时；配合 request() 做异常归一化。
 
 export const http = axios.create({
-  baseURL: '/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   headers: { 'Content-Type': 'application/json' },
   timeout: 15000,
 })
@@ -40,7 +41,7 @@ http.interceptors.request.use((config) => {
   return config
 })
 
-// 响应拦截器：401（非登录请求本身）视为登录态失效，清令牌并跳转登录页
+// 响应拦截器：401（非登录请求本身）视为登录态失效，清令牌并通知根组件跳转登录页
 http.interceptors.response.use(undefined, (error: unknown) => {
   if (
     axios.isAxiosError(error)
@@ -49,7 +50,7 @@ http.interceptors.response.use(undefined, (error: unknown) => {
     && !window.location.pathname.startsWith('/login')
   ) {
     clearToken()
-    window.location.href = '/login'
+    window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT))
   }
   return Promise.reject(error)
 })
@@ -60,7 +61,8 @@ http.interceptors.response.use(undefined, (error: unknown) => {
 //      立即重试 immediateRetries 次；
 //   2. 恢复重试：即时重试全部失败后将请求去重入队，轮询 /healthy 探测服务，
 //      恢复后自动重放队列中的请求。
-// 注意：仅网络层失败（断网 / 宕机 / 超时）触发重试，HTTP 4xx/5xx 业务错误不重试。
+// 注意：仅幂等 GET 的网络层失败（断网 / 宕机 / 超时）触发重试；
+// 非 GET 请求只执行一次且不入队，HTTP 4xx/5xx 业务错误不重试。
 
 export interface RetryOptions {
   /** 入队前的即时重试次数，默认 2 */
@@ -186,10 +188,11 @@ async function checkHealth(): Promise<void> {
   recoverListeners.forEach(l => l())
 }
 
-// ---------- 统一请求入口（含两级重试） ----------
+// ---------- 统一请求入口（仅 GET 含两级重试） ----------
 
 async function executeWithRetry<T>(config: AxiosRequestConfig, run: () => Promise<T>): Promise<T> {
-  const maxAttempts = retryOptions.immediateRetries + 1
+  const retryable = String(config.method ?? 'get').toUpperCase() === 'GET'
+  const maxAttempts = retryable ? retryOptions.immediateRetries + 1 : 1
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0)
       dequeueRetry(config) // 亲自重试前先退出队列，避免与健康探测的重放叠加
@@ -202,6 +205,8 @@ async function executeWithRetry<T>(config: AxiosRequestConfig, run: () => Promis
       dequeueRetry(config)
       if (!isNetworkFailure(e))
         throw toAppError(e) // 业务错误直接抛出，不重试
+      if (!retryable)
+        throw new Error('服务连接失败，请检查网络后重试')
       if (attempt === 0)
         queueRetry(config) // 首次失败即入队，尽早开始健康探测
       if (attempt < maxAttempts - 1) {
@@ -401,8 +406,13 @@ export function deleteCategory(id: number, migrateTo?: string) {
 
 // ---------- 用户 ----------
 
-export function fetchUsers() {
-  return request<{ users: UserListItem[] }>('/users')
+export function fetchUsers(params: UserListParams = {}) {
+  const q = new URLSearchParams()
+  if (params.page)
+    q.set('page', String(params.page))
+  if (params.pageSize)
+    q.set('pageSize', String(params.pageSize))
+  return request<UserListResult>(`/users?${q.toString()}`)
 }
 
 /** 用户详情（含统计字段与收货地址列表） */

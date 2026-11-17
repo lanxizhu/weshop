@@ -5,14 +5,12 @@ import { MAX_CART_ITEM_QUANTITY } from '@weshop/shared'
 import { useRef, useState } from 'react'
 import { fmtPrice, goDetail } from '@/components/product-card'
 import { assetUrl } from '@/services/api'
-import { ensureLogin, getCachedUser } from '@/services/auth'
+import { ensureLogin, getCachedUser, getToken } from '@/services/auth'
 import { fetchCart, removeCartItem, syncCartBadge, updateCartQuantity } from '@/services/cart'
 import { setTabSelected, TAB_INDEX } from '@/services/tabbar'
+import { KeyedSerialQueue } from '@/utils/keyed-serial-queue'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
 
 export default function Cart() {
   const [items, setItems] = useState<CartItem[]>([])
@@ -20,6 +18,12 @@ export default function Cart() {
   const [loading, setLoading] = useState(true)
   const [loggedIn, setLoggedIn] = useState(() => !!getCachedUser())
   const initializedRef = useRef(false)
+  const itemsRef = useRef<CartItem[]>([])
+  const confirmedItemsRef = useRef<CartItem[]>([])
+  const quantityTargetsRef = useRef(new Map<number, number>())
+  const quantityVersionsRef = useRef(new Map<number, number>())
+  const quantityQueueRef = useRef(new KeyedSerialQueue())
+  const cartRevisionRef = useRef(0)
 
   useDidShow(() => {
     setTabSelected(TAB_INDEX.cart)
@@ -27,24 +31,24 @@ export default function Cart() {
   })
 
   async function load() {
+    const revision = cartRevisionRef.current
     setLoading(true)
     try {
       await ensureLogin()
       setLoggedIn(true)
       const res = await fetchCart()
-      applyCart(res.items)
-      syncCartBadge(res.total_quantity)
+      if (revision === cartRevisionRef.current)
+        applyCart(res.items)
     }
     catch (err) {
-      const message = err instanceof Error ? err.message : '加载失败'
-      if (message === '请先登录') {
+      if (err instanceof Error && err.message === '请先登录') {
         setLoggedIn(false)
-        setItems([])
+        setCurrentItems([])
+        confirmedItemsRef.current = []
         setChecked(new Set())
-        syncCartBadge(0)
       }
-      else {
-        toast(message)
+      else if (revision === cartRevisionRef.current) {
+        toast(err, '加载失败')
       }
     }
     finally {
@@ -52,9 +56,20 @@ export default function Cart() {
     }
   }
 
+  function setCurrentItems(list: CartItem[]) {
+    itemsRef.current = list
+    setItems(list)
+    syncCartBadge(list.filter(item => !item.invalid).reduce((sum, item) => sum + item.quantity, 0))
+  }
+
+  function replaceItem(list: CartItem[], replacement: CartItem): CartItem[] {
+    return list.map(item => item.id === replacement.id ? replacement : item)
+  }
+
   /** 服务端数据回填：首次加载勾选所有非失效项，之后保留用户的勾选状态 */
   function applyCart(list: CartItem[]) {
-    setItems(list)
+    confirmedItemsRef.current = list
+    setCurrentItems(list)
     const first = !initializedRef.current
     initializedRef.current = true
     setChecked((prev) => {
@@ -82,18 +97,68 @@ export default function Cart() {
     })
   }
 
-  async function handleQuantity(item: CartItem, delta: 1 | -1) {
-    const quantity = item.quantity + delta
+  function handleQuantity(item: CartItem, delta: 1 | -1) {
+    const currentItem = itemsRef.current.find(current => current.id === item.id) ?? item
+    if (currentItem.invalid)
+      return
+    const currentQuantity = quantityTargetsRef.current.get(item.id) ?? currentItem.quantity
+    const quantity = currentQuantity + delta
     if (quantity < 1 || quantity > MAX_CART_ITEM_QUANTITY)
       return
-    try {
-      const res = await updateCartQuantity(item.id, quantity)
-      applyCart(res.items)
-      syncCartBadge(res.total_quantity)
-    }
-    catch (err) {
-      toast(err instanceof Error ? err.message : '修改失败')
-    }
+
+    const version = (quantityVersionsRef.current.get(item.id) ?? 0) + 1
+    quantityVersionsRef.current.set(item.id, version)
+    quantityTargetsRef.current.set(item.id, quantity)
+    cartRevisionRef.current += 1
+    setCurrentItems(replaceItem(itemsRef.current, {
+      ...currentItem,
+      quantity,
+      subtotal: Math.round(currentItem.price * quantity * 100) / 100,
+    }))
+
+    void quantityQueueRef.current.run(item.id, async () => {
+      try {
+        const res = await updateCartQuantity(item.id, quantity)
+        if (!getToken()) {
+          if (version !== quantityVersionsRef.current.get(item.id))
+            return
+          quantityTargetsRef.current.delete(item.id)
+          setLoggedIn(false)
+          confirmedItemsRef.current = []
+          setCurrentItems([])
+          setChecked(new Set())
+          return
+        }
+        const updated = res.items.find(current => current.id === item.id)
+        if (updated)
+          confirmedItemsRef.current = replaceItem(confirmedItemsRef.current, updated)
+        if (version !== quantityVersionsRef.current.get(item.id))
+          return
+        quantityTargetsRef.current.delete(item.id)
+        if (!updated)
+          throw new Error('购物车数据异常，请重试')
+        setCurrentItems(replaceItem(itemsRef.current, updated))
+      }
+      catch (err) {
+        if (version !== quantityVersionsRef.current.get(item.id))
+          return
+        quantityTargetsRef.current.delete(item.id)
+        if (!getToken() || (err instanceof Error && err.message === '请先登录')) {
+          setLoggedIn(false)
+          confirmedItemsRef.current = []
+          setCurrentItems([])
+          setChecked(new Set())
+          return
+        }
+        const confirmed = confirmedItemsRef.current.find(current => current.id === item.id)
+        if (confirmed)
+          setCurrentItems(replaceItem(itemsRef.current, confirmed))
+        toast(err, '修改失败')
+      }
+      finally {
+        cartRevisionRef.current += 1
+      }
+    })
   }
 
   function handleRemove(item: CartItem) {
@@ -101,12 +166,16 @@ export default function Cart() {
       if (!res.confirm)
         return
       try {
-        await removeCartItem(item.id)
+        await quantityQueueRef.current.run(item.id, () => removeCartItem(item.id))
+        const remaining = itemsRef.current.filter(current => current.id !== item.id)
+        confirmedItemsRef.current = confirmedItemsRef.current.filter(current => current.id !== item.id)
+        cartRevisionRef.current += 1
+        setCurrentItems(remaining)
         Taro.showToast({ title: '已删除', icon: 'success' })
         load()
       }
       catch (err) {
-        toast(err instanceof Error ? err.message : '删除失败')
+        toast(err, '删除失败')
       }
     })
   }
@@ -118,7 +187,7 @@ export default function Cart() {
       load()
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '登录失败')
+      toast(err, '登录失败')
     }
   }
 

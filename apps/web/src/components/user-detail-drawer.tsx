@@ -46,20 +46,21 @@ interface UserDetailDrawerProps {
   onOpenChange: (open: boolean) => void
 }
 
-export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerProps) {
+export function UserDetailDrawer(props: UserDetailDrawerProps) {
+  if (!props.open || !props.user)
+    return null
+  return <UserDetailContent key={props.user.id} {...props} />
+}
+
+function UserDetailContent({ user, open, onOpenChange }: UserDetailDrawerProps) {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [tab, setTab] = useState<'addresses' | 'orders'>('addresses')
   const [orders, setOrders] = useState<Order[] | null>(null)
   const [ordersTotal, setOrdersTotal] = useState(0)
   const [ordersPage, setOrdersPage] = useState(1)
 
-  // 打开抽屉时拉取用户详情；失败则静默回退到列表数据
+  // 挂载抽屉时拉取用户详情；失败则静默回退到列表数据
   useEffect(() => {
-    setDetail(null)
-    setTab('addresses')
-    setOrders(null)
-    setOrdersTotal(0)
-    setOrdersPage(1)
     if (!open || !user)
       return
     let cancelled = false
@@ -79,7 +80,6 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
     if (!open || tab !== 'orders' || !user)
       return
     let cancelled = false
-    setOrders(null)
     fetchUserOrders(user.id, { page: ordersPage, pageSize: ORDER_PAGE_SIZE })
       .then((result) => {
         if (cancelled)
@@ -160,7 +160,15 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                 </div>
               </div>
 
-              <Tabs value={tab} onValueChange={v => setTab(v as 'addresses' | 'orders')}>
+              <Tabs
+                value={tab}
+                onValueChange={(v) => {
+                  const next = v as 'addresses' | 'orders'
+                  if (next === 'orders' && tab !== 'orders')
+                    setOrders(null)
+                  setTab(next)
+                }}
+              >
                 <TabsList className="w-full">
                   <TabsTrigger value="addresses" className="flex-1">收货地址</TabsTrigger>
                   <TabsTrigger value="orders" className="flex-1">订单</TabsTrigger>
@@ -170,8 +178,8 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                   {detail === null
                     ? (
                         <div className="space-y-2 py-2">
-                          {Array.from({ length: 2 }).map((_, i) => (
-                            <Skeleton key={i} className="h-16 w-full" />
+                          {Array.from({ length: 2 }, (_, i) => `address-skeleton-${i}`).map(key => (
+                            <Skeleton key={key} className="h-16 w-full" />
                           ))}
                         </div>
                       )
@@ -204,8 +212,8 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                   {orders === null
                     ? (
                         <div className="space-y-2 py-2">
-                          {Array.from({ length: 3 }).map((_, i) => (
-                            <Skeleton key={i} className="h-14 w-full" />
+                          {Array.from({ length: 3 }, (_, i) => `order-skeleton-${i}`).map(key => (
+                            <Skeleton key={key} className="h-14 w-full" />
                           ))}
                         </div>
                       )
@@ -251,7 +259,10 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                           variant="outline"
                           size="sm"
                           disabled={ordersPage <= 1 || orders === null}
-                          onClick={() => setOrdersPage(p => Math.max(1, p - 1))}
+                          onClick={() => {
+                            setOrders(null)
+                            setOrdersPage(p => Math.max(1, p - 1))
+                          }}
                         >
                           上一页
                         </Button>
@@ -259,7 +270,10 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                           variant="outline"
                           size="sm"
                           disabled={ordersPage >= ordersTotalPages || orders === null}
-                          onClick={() => setOrdersPage(p => p + 1)}
+                          onClick={() => {
+                            setOrders(null)
+                            setOrdersPage(p => p + 1)
+                          }}
                         >
                           下一页
                         </Button>

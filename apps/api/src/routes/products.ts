@@ -2,12 +2,14 @@ import { Router } from 'express'
 import type { RequestHandler } from 'express'
 import { LOW_STOCK_THRESHOLD } from '@weshop/shared'
 import type { Product, ProductSortField, ProductStats, SortOrder, StockLog } from '@weshop/shared'
-import { requireAdmin } from '../auth.js'
+import { optionalAdmin, requireAdmin } from '../auth.js'
 import {
   db,
   getImages,
+  getImagesForProducts,
   getProduct,
   getSkus,
+  getSkusForProducts,
   inTransaction,
   productExists,
   replaceImages,
@@ -15,13 +17,16 @@ import {
   syncProductDerivedFields,
   writeStockLog,
 } from '../db.js'
-import { deleteLocalUpload } from '../utils/file-cleanup.js'
+import { escapeCsvCell } from '../utils/csv.js'
+import { deleteLocalUploads } from '../utils/file-cleanup.js'
 import { validateProduct, validateStockDelta } from '../validate.js'
 
-// 鉴权策略：GET 列表 / 详情对小程序公开；export.csv、库存流水与全部写操作在路由上显式挂 requireAdmin。
+// 鉴权策略：GET 列表 / 详情对小程序公开但仅返回上架商品；有效管理员令牌可查看全部。
+// export.csv、库存流水与全部写操作在路由上显式挂 requireAdmin。
 // 注意：不要改回按路径字符串匹配的中间件——Express 5 路由忽略尾部斜杠且大小写不敏感，
 // 字符串比对会被 /export.csv/、/EXPORT.CSV 之类的变形绕过。
 export const productsRouter = Router()
+productsRouter.use(optionalAdmin)
 
 /** 排序字段白名单：防止 SQL 注入，仅允许映射内的列 */
 const SORT_COLUMNS: Record<ProductSortField, string> = {
@@ -41,15 +46,15 @@ interface ListQuery {
   order?: string
 }
 
-/** 组装列表过滤条件（WHERE 子句与参数），供列表与 CSV 导出复用 */
-function buildListFilter(q: ListQuery) {
-  let where = 'WHERE 1=1'
+/** 组装列表过滤条件（WHERE 子句与参数），供列表与 CSV 导出复用；公开访问强制只查上架商品 */
+function buildListFilter(q: ListQuery, isAdmin = false) {
+  let where = isAdmin ? 'WHERE 1=1' : `WHERE status='on'`
   const params: string[] = []
   if (q.search) {
     where += ' AND (name LIKE ? OR description LIKE ?)'
     params.push(`%${q.search}%`, `%${q.search}%`)
   }
-  if (q.status === 'on' || q.status === 'off') {
+  if (isAdmin && (q.status === 'on' || q.status === 'off')) {
     where += ' AND status = ?'
     params.push(q.status)
   }
@@ -67,9 +72,9 @@ function buildListFilter(q: ListQuery) {
 /** 商品列表：搜索 / 状态 / 分类 / 低库存过滤 + 排序 + 分页（带图片与规格） */
 productsRouter.get('/', (req, res) => {
   const q = req.query as ListQuery
-  const { where, params } = buildListFilter(q)
+  const { where, params } = buildListFilter(q, typeof res.locals.adminId === 'number')
 
-  const sort: ProductSortField = q.sort && q.sort in SORT_COLUMNS ? (q.sort as ProductSortField) : 'updated_at'
+  const sort: ProductSortField = q.sort && Object.hasOwn(SORT_COLUMNS, q.sort) ? (q.sort as ProductSortField) : 'updated_at'
   const order: SortOrder = q.order === 'asc' ? 'asc' : 'desc'
   const page = Math.max(1, Number.parseInt(q.page ?? '', 10) || 1)
   const pageSize = Math.min(100, Math.max(1, Number.parseInt(q.pageSize ?? '', 10) || 10))
@@ -83,7 +88,14 @@ productsRouter.get('/', (req, res) => {
     )
     .all(...params, String(pageSize), String((page - 1) * pageSize)) as unknown as Array<Omit<Product, 'images' | 'skus'>>
 
-  const products: Product[] = rows.map((p) => ({ ...p, images: getImages(p.id), skus: getSkus(p.id) }))
+  const productIds = rows.map((p) => p.id)
+  const imagesByProduct = getImagesForProducts(productIds)
+  const skusByProduct = getSkusForProducts(productIds)
+  const products: Product[] = rows.map((p) => ({
+    ...p,
+    images: imagesByProduct.get(p.id) ?? [],
+    skus: skusByProduct.get(p.id) ?? [],
+  }))
   res.json({ products, total, page, pageSize })
 })
 
@@ -92,10 +104,10 @@ export const statsHandler: RequestHandler = (_req, res) => {
   const row = db
     .prepare(
       `SELECT COUNT(*) AS total,
-              SUM(CASE WHEN status='on' THEN 1 ELSE 0 END) AS onShelf,
-              SUM(CASE WHEN status='off' THEN 1 ELSE 0 END) AS offShelf,
-              ROUND(SUM(price * stock), 2) AS totalValue,
-              SUM(CASE WHEN stock < ? THEN 1 ELSE 0 END) AS lowStock
+              COALESCE(SUM(CASE WHEN status='on' THEN 1 ELSE 0 END), 0) AS onShelf,
+              COALESCE(SUM(CASE WHEN status='off' THEN 1 ELSE 0 END), 0) AS offShelf,
+              COALESCE(ROUND(SUM(price * stock), 2), 0) AS totalValue,
+              COALESCE(SUM(CASE WHEN stock < ? THEN 1 ELSE 0 END), 0) AS lowStock
        FROM products`
     )
     .get(String(LOW_STOCK_THRESHOLD)) as unknown as ProductStats
@@ -104,12 +116,15 @@ export const statsHandler: RequestHandler = (_req, res) => {
 
 /** 导出当前过滤条件下的商品为 CSV（带 BOM，Excel 打开不乱码）；须注册在 /:id 之前 */
 productsRouter.get('/export.csv', requireAdmin, (req, res) => {
-  const { where, params } = buildListFilter(req.query as ListQuery)
+  const { where, params } = buildListFilter(req.query as ListQuery, true)
   const rows = db
     .prepare(`SELECT * FROM products ${where} ORDER BY updated_at DESC, id DESC LIMIT 5000`)
     .all(...params) as unknown as Array<Omit<Product, 'images' | 'skus'>>
 
-  const esc = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`
+  const esc = escapeCsvCell
+  const productIds = rows.map((p) => p.id)
+  const imagesByProduct = getImagesForProducts(productIds)
+  const skusByProduct = getSkusForProducts(productIds)
   const header = 'ID,名称,分类,价格,库存,状态,描述,图片数,规格数,创建时间,更新时间'
   const lines = rows.map((p) =>
     [
@@ -120,8 +135,8 @@ productsRouter.get('/export.csv', requireAdmin, (req, res) => {
       p.stock,
       p.status === 'on' ? '在售' : '已下架',
       esc(p.description),
-      getImages(p.id).length,
-      getSkus(p.id).length,
+      imagesByProduct.get(p.id)?.length ?? 0,
+      skusByProduct.get(p.id)?.length ?? 0,
       esc(p.created_at),
       esc(p.updated_at),
     ].join(',')
@@ -133,10 +148,11 @@ productsRouter.get('/export.csv', requireAdmin, (req, res) => {
   res.send(csv)
 })
 
-/** 商品详情 */
+/** 商品详情：公开访问不暴露下架商品，避免通过已知 id 绕过列表过滤 */
 productsRouter.get('/:id', (req, res) => {
   const product = getProduct(req.params.id)
-  if (!product) return res.status(404).json({ errors: ['商品不存在'] })
+  const isAdmin = typeof res.locals.adminId === 'number'
+  if (!product || (!isAdmin && product.status !== 'on')) return res.status(404).json({ errors: ['商品不存在'] })
   res.json({ product })
 })
 
@@ -171,7 +187,7 @@ function collectProductUploads(id: number | string): string[] {
 }
 
 /** 批量删除（product_images / product_skus 由外键级联清理，事务提交后删除无人引用的图片文件） */
-productsRouter.post('/batch-delete', requireAdmin, (req, res) => {
+productsRouter.post('/batch-delete', requireAdmin, async (req, res) => {
   const { ids } = req.body as { ids?: unknown }
   if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => Number.isInteger(Number(id)))) {
     return res.status(400).json({ errors: ['ids 必须是非空整数数组'] })
@@ -183,7 +199,7 @@ productsRouter.post('/batch-delete', requireAdmin, (req, res) => {
     for (const id of ids) n += Number(stmt.run(Number(id)).changes)
     return n
   })
-  for (const url of imageUrls) deleteLocalUpload(url)
+  await deleteLocalUploads(imageUrls)
   res.json({ deleted })
 })
 
@@ -254,15 +270,32 @@ productsRouter.post('/:id/duplicate', requireAdmin, (req, res) => {
 })
 
 /** 更新商品（图片与规格全量替换；事务提交后清理不再被引用的图片文件） */
-productsRouter.put('/:id', requireAdmin, (req, res) => {
+productsRouter.put('/:id', requireAdmin, async (req, res) => {
   const { errors, value } = validateProduct(req.body)
   if (errors) return res.status(400).json({ errors })
   if (!productExists(req.params.id)) return res.status(404).json({ errors: ['商品不存在'] })
 
   // 校验传入的规格 id 必须属于该商品，防止越权改到别的商品规格
-  const ownedSkuIds = new Set(getSkus(req.params.id).map((s) => s.id))
+  const existingSkus = getSkus(req.params.id)
+  const ownedSkuIds = new Set(existingSkus.map((s) => s.id))
   if (value.skus.some((s) => s.id !== undefined && !ownedSkuIds.has(Number(s.id)))) {
     return res.status(400).json({ errors: ['规格不属于该商品'] })
+  }
+
+  const keepIds = new Set(value.skus.filter((s) => s.id !== undefined).map((s) => Number(s.id)))
+  const removedSkus = existingSkus.filter((s) => !keepIds.has(s.id))
+  if (removedSkus.length > 0) {
+    const placeholders = removedSkus.map(() => '?').join(',')
+    const activeOrder = db
+      .prepare(
+        `SELECT o.order_no FROM order_items oi
+         JOIN orders o ON o.id = oi.order_id
+         WHERE oi.sku_id IN (${placeholders}) AND o.status IN ('pending','paid') LIMIT 1`
+      )
+      .get(...removedSkus.map((s) => s.id)) as { order_no: string } | undefined
+    if (activeOrder) {
+      return res.status(400).json({ errors: [`规格仍被待处理订单 ${activeOrder.order_no} 引用，请先处理该订单后再删除`] })
+    }
   }
 
   const oldImages = getImages(req.params.id)
@@ -273,11 +306,42 @@ productsRouter.put('/:id', requireAdmin, (req, res) => {
     ).run(value.name, value.category, value.price, value.stock, value.description, value.status, req.params.id)
     replaceImages(req.params.id, value.images)
     const removed = replaceSkus(req.params.id, value.skus)
+    const updatedSkus = getSkus(req.params.id)
+    const previousById = new Map(existingSkus.map((s) => [s.id, s.stock]))
+    for (const sku of updatedSkus) {
+      const delta = sku.stock - (previousById.get(sku.id) ?? 0)
+      if (delta !== 0) {
+        writeStockLog({
+          product_id: req.params.id,
+          sku_id: sku.id,
+          sku_name: sku.name,
+          delta,
+          stock_after: sku.stock,
+          reason: 'adjust',
+          ref: '商品编辑',
+          operator: `admin:${res.locals.adminId}`,
+        })
+      }
+    }
+    for (const sku of removedSkus) {
+      if (sku.stock > 0) {
+        writeStockLog({
+          product_id: req.params.id,
+          sku_id: sku.id,
+          sku_name: sku.name,
+          delta: -sku.stock,
+          stock_after: 0,
+          reason: 'adjust',
+          ref: '商品编辑：规格已删除',
+          operator: `admin:${res.locals.adminId}`,
+        })
+      }
+    }
     syncProductDerivedFields(req.params.id)
     return removed
   })
   const removedImages = oldImages.filter((u) => !value.images.includes(u))
-  for (const url of [...removedImages, ...removedSkuImages]) deleteLocalUpload(url)
+  await deleteLocalUploads([...removedImages, ...removedSkuImages])
   res.json({ product: getProduct(req.params.id) })
 })
 
@@ -294,20 +358,30 @@ productsRouter.patch('/:id/status', requireAdmin, (req, res) => {
 
 /** 按规格原子增减库存并写 adjust 流水，返回变动后的 SKU 库存；库存不足返回 null，规格不存在返回 undefined */
 function adjustSkuStock(productId: number | string, skuId: number | string, delta: number, operator: string) {
-  const r = db
-    .prepare(
-      `UPDATE product_skus SET stock = stock + ?, updated_at=datetime('now','localtime')
-       WHERE id=? AND product_id=? AND stock + ? >= 0`
-    )
-    .run(delta, skuId, productId, delta)
-  if (r.changes === 0) {
-    const sku = db.prepare('SELECT id FROM product_skus WHERE id=? AND product_id=?').get(skuId, productId)
-    return sku ? null : undefined
-  }
-  const sku = db.prepare('SELECT name, stock FROM product_skus WHERE id=?').get(skuId) as { name: string; stock: number }
-  writeStockLog({ product_id: productId, sku_id: Number(skuId), sku_name: sku.name, delta, stock_after: sku.stock, reason: 'adjust', operator })
-  syncProductDerivedFields(productId)
-  return sku.stock
+  return inTransaction(() => {
+    const r = db
+      .prepare(
+        `UPDATE product_skus SET stock = stock + ?, updated_at=datetime('now','localtime')
+         WHERE id=? AND product_id=? AND stock + ? >= 0`
+      )
+      .run(delta, skuId, productId, delta)
+    if (r.changes === 0) {
+      const sku = db.prepare('SELECT id FROM product_skus WHERE id=? AND product_id=?').get(skuId, productId)
+      return sku ? null : undefined
+    }
+    const sku = db.prepare('SELECT name, stock FROM product_skus WHERE id=?').get(skuId) as { name: string; stock: number }
+    writeStockLog({
+      product_id: productId,
+      sku_id: Number(skuId),
+      sku_name: sku.name,
+      delta,
+      stock_after: sku.stock,
+      reason: 'adjust',
+      operator,
+    })
+    syncProductDerivedFields(productId)
+    return sku.stock
+  })
 }
 
 /** 库存增减：仅单规格商品允许（代理到该规格）；多规格请用 PATCH /:id/skus/:skuId/stock */
@@ -338,10 +412,10 @@ productsRouter.patch('/:id/skus/:skuId/stock', requireAdmin, (req, res) => {
 })
 
 /** 删除商品（图片/规格由外键级联清理，事务后删除无人引用的图片文件） */
-productsRouter.delete('/:id', requireAdmin, (req, res) => {
+productsRouter.delete('/:id', requireAdmin, async (req, res) => {
   const imageUrls = collectProductUploads(req.params.id)
   const r = db.prepare('DELETE FROM products WHERE id=?').run(req.params.id)
   if (r.changes === 0) return res.status(404).json({ errors: ['商品不存在'] })
-  for (const url of imageUrls) deleteLocalUpload(url)
+  await deleteLocalUploads(imageUrls)
   res.json({ ok: true })
 })

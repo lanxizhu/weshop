@@ -1,10 +1,7 @@
 import type { Order } from '@weshop/shared'
 import Taro from '@tarojs/taro'
 import { cancelOrder, confirmOrder } from '@/services/order'
-
-function toast(message: string) {
-  Taro.showToast({ title: message, icon: 'none' })
-}
+import { toast } from '@/utils/toast'
 
 export function goCashier(order: Order) {
   Taro.navigateTo({ url: `/pages/cashier/index?id=${order.id}` })
@@ -25,7 +22,7 @@ export function handleCancelOrder(order: Order, onDone: () => void) {
       onDone()
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '取消失败')
+      toast(err, '取消失败')
     }
   })
 }
@@ -41,7 +38,7 @@ export function handleConfirmOrder(order: Order, onDone: () => void) {
       onDone()
     }
     catch (err) {
-      toast(err instanceof Error ? err.message : '操作失败')
+      toast(err, '操作失败')
     }
   })
 }

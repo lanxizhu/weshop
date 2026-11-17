@@ -1,5 +1,5 @@
-# WeShop CI：lint → 类型检查 → Web 构建 → API 自包含冒烟
-# miniprogram 只跑 typecheck，不跑 Taro 构建（重且不稳）；web 的类型检查含在 build 内
+# WeShop CI：生产依赖审计 → lint → 类型检查 → Web/小程序构建 → 全量测试
+# Web 的类型检查含在 build 内，pnpm test 包含 API、小程序、Web 单测及 API 自包含冒烟
 name: CI
 
 on:
@@ -23,12 +23,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm audit --prod
+
       # 存量代码有 warning 无 error，不要加 --max-warnings 0
       - run: pnpm -r lint
 
       - run: pnpm typecheck
 
       - run: pnpm build:web
+
+      - run: pnpm --filter miniprogram build:weapp
 
       # 自包含 API 冒烟：临时端口 7821 + 临时 SQLite 库，跑完自动清理
       - run: pnpm test

@@ -1,6 +1,8 @@
 # Web 端请求层说明
 
-`src/lib/api.ts` 是前端统一的 API 封装，基于 axios，内置**异常归一化**与**两级自动重试**。
+`src/lib/api.ts` 是前端统一的 API 封装，基于 axios，内置**异常归一化**与 **GET 请求两级自动重试**。
+
+Axios 的 `baseURL` 默认为 `/api`，可用 `VITE_API_BASE_URL` 覆盖；开发服务器的 `/api`、`/uploads` 代理目标默认为 `http://localhost:7101`，可用 `VITE_API_PROXY_TARGET` 覆盖。`VITE_` 变量会进入客户端构建，不能存放密钥。
 
 ## 快速使用
 
@@ -43,11 +45,11 @@ await createProduct({ name: '新商品', price: 99, stock: 10, category: '数码
 | `updateCategory(id, input)` | `PUT /api/categories/:id` | 重命名，同步更新该分类下所有商品 |
 | `reorderCategories(ids)` | `PUT /api/categories/reorder` | 按 ids 数组顺序重排（必须传入全部现有分类 id） |
 | `deleteCategory(id, migrateTo?)` | `DELETE /api/categories/:id?migrateTo=` | 空分类直接删；有商品时必须传 `migrateTo`（目标分类名），先迁移商品再删除，返回 `{ ok, migrated }` |
-| `fetchUsers()` | `GET /api/users` | 用户列表（按注册倒序，附 `address_count`） |
+| `fetchUsers(params)` | `GET /api/users` | 用户列表（按注册倒序，附 `address_count`）；参数 `page` / `pageSize`（默认 1 / 10，上限 50）；返回 `{ users, total, addressTotal, page, pageSize }`，其中 `addressTotal` 为不受分页影响的地址总数 |
 
 ### 登录鉴权（管理端）
 
-管理后台使用账号密码登录。`POST /api/admin/auth/login` 返回 `{ token, admin }`，前端把 token 存入 `localStorage`（`src/lib/auth.ts`），axios 请求拦截器自动携带 `Authorization: Bearer <token>`；任意接口返回 401 时自动清登录态并跳转 `/login`。
+管理后台使用账号密码登录。`POST /api/admin/auth/login` 返回 `{ token, admin }`，前端把 token 存入 `localStorage`（`src/lib/auth.ts`），axios 请求拦截器自动携带 `Authorization: Bearer <token>`；任意非登录接口返回 401 时自动清登录态，通过应用内事件跳转 `/login` 并携带来源 `redirect`，重新登录后返回原页面，无需整页刷新。
 
 令牌与小程序端同为 HMAC-SHA256 自包含 token（有效期 30 天，密钥 `API_TOKEN_SECRET`），但 payload 带 `role: 'admin'`，C 端用户令牌访问管理端接口同样返回 401。
 
@@ -133,7 +135,7 @@ Content-Type: application/json
 
 ### 订单（小程序端，需登录）
 
-全部接口需 `Authorization: Bearer <token>`，只能读写本人订单。下单时**服务端计算金额**（不信任前端传值），在**事务内原子扣减库存**（任一商品库存不足/已下架则整单回滚），并写入商品快照（`order_items` 的 `product_name/product_image/price`）与收货地址快照（`receiver/phone/province/city/district/detail`），不随商品、地址后续编辑变化。取消订单会**回补库存**。
+全部接口需 `Authorization: Bearer <token>`，只能读写本人订单。下单时**服务端计算金额**（不信任前端传值），在**事务内原子扣减库存**（任一商品库存不足/已下架则整单回滚），并写入商品快照（`order_items` 的 `product_name/product_image/price`）与收货地址快照（`receiver/phone/province/city/district/detail`），不随商品、地址后续编辑变化。取消订单只回补订单明细中的原规格；待处理订单引用的规格禁止从商品编辑中删除，历史无 SKU 订单仅在商品仍为单一规格时安全回补。
 
 订单状态机（`OrderStatus`）：
 
@@ -213,7 +215,7 @@ pending（待支付）─ pay ──→ paid（待发货）─ ship(管理端) �
 
 ### 订单（管理端）
 
-管理端接口需管理员令牌（见「登录鉴权（管理端）」）。`AdminOrder` = `Order` + `nick_name`（买家昵称，join users 得出）。前端对应函数见下表（`src/lib/api.ts`，重试与异常归一化自动生效）。
+管理端接口需管理员令牌（见「登录鉴权（管理端）」）。`AdminOrder` = `Order` + `nick_name`（买家昵称，join users 得出）。前端对应函数见下表（`src/lib/api.ts`，异常归一化自动生效，GET 请求自动重试）。
 
 | 函数 | 接口 | 说明 |
 |---|---|---|
@@ -332,15 +334,16 @@ Content-Type: application/json
 | 错误来源 | 抛出消息 |
 |---|---|
 | 服务端返回 `{ errors: [...] }` | 数组拼接为「；」分隔的中文消息 |
-| 网络层失败（断网 / 宕机 / 超时） | `服务连接失败，恢复后将自动重试` |
+| GET 网络层失败（断网 / 宕机 / 超时） | `服务连接失败，恢复后将自动重试` |
+| 非 GET 网络层失败 | `服务连接失败，请检查网络后重试` |
 | 其他 | `请求失败，请重试` |
 
 ## 重试策略
 
-仅**网络层失败**（axios 错误且无 response）触发重试，HTTP 4xx/5xx 业务错误不重试。
+仅**幂等 GET 请求的网络层失败**（axios 错误且无 response）触发重试，HTTP 4xx/5xx 业务错误不重试。POST、PUT、PATCH、DELETE 等请求只执行一次，既不即时重试，也不进入恢复重放队列，避免重复写入。
 
 ```
-请求失败
+GET 请求网络失败
    │
    ├─ L1 即时重试：指数退避重试 immediateRetries 次（默认 2 次：~1s → ~2s，20% 随机抖动）
    │      └─ 成功 → 正常返回
@@ -352,8 +355,9 @@ Content-Type: application/json
 
 关键行为：
 
-- **首次失败即入队**并开始健康探测，不等即时重试耗尽，恢复发现更快。
-- **重试与重放互斥**：每次即时重试前先从队列移除该请求，避免与健康探测的重放叠加导致重复写入；请求成功或遇到业务错误也会移出队列。
+- **非 GET 请求不重试、不入队**，网络错误提示用户检查后手动重试。
+- **GET 首次失败即入队**并开始健康探测，不等即时重试耗尽，恢复发现更快。
+- **重试与重放互斥**：每次即时重试前先从队列移除该请求，避免与健康探测的重放叠加；请求成功或遇到业务错误也会移出队列。
 - 重放期间服务再次宕机，请求会重新排队等下一轮恢复。
 - 相同的失败请求（如连续搜索触发相同 GET）在队列中去重，只保留最后一次。
 
@@ -400,14 +404,14 @@ GET /api/healthy → 200 { "ok": true, "uptime": 60 }
 
 ## 新增接口的步骤
 
-在 `api.ts` 中仿照现有函数添加即可，重试与异常处理自动生效：
+在 `api.ts` 中仿照现有函数添加即可，异常归一化自动生效，GET 请求自动应用上述重试策略：
 
 ```ts
 export function fetchSomething(id: number) {
   return request<Something>(`/something/${id}`)
 }
 
-// 上传等非 JSON 请求使用 executeWithRetry 包裹：
+// 上传等非 JSON 请求使用 executeWithRetry 包裹；非 GET 不会自动重试：
 export function uploadFile(file: File) {
   const fd = new FormData()
   fd.append('file', file)

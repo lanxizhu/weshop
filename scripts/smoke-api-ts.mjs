@@ -5,6 +5,15 @@ import path from 'node:path'
 const BASE = process.env.SMOKE_BASE || 'http://localhost:7101'
 const DATA_DIR = path.join(tmpdir(), 'weshop-api-smoke')
 
+// 每轮冒烟使用独立 IP，避免限流窗口内重复执行互相影响；单项限流用例会覆盖为自己的测试 IP
+const realFetch = globalThis.fetch
+const smokeIp = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+globalThis.fetch = (input, init) => {
+  const headers = new Headers(init?.headers)
+  if (!headers.has('X-Forwarded-For')) headers.set('X-Forwarded-For', smokeIp)
+  return realFetch(input, { ...init, headers })
+}
+
 mkdirSync(DATA_DIR, { recursive: true })
 writeFileSync(path.join(DATA_DIR, 'empty.txt'), '')
 
@@ -26,8 +35,10 @@ function check(name, cond, extra = '') {
 
 const j = (r) => r.json()
 
-// 跨段落共享：已支付并完成的订单号，供订单 CSV 导出过滤断言使用
+// 跨段落共享：订单 CSV、公开商品过滤与订单快照图片回归使用的数据
 let completedOrderNo = ''
+let offProductId = 0
+let snapshotUrl = ''
 
 // 健康检查
 {
@@ -163,13 +174,20 @@ let adminAuth
   adminAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${rlb.token}` }
 }
 
-// 种子数据
+// 种子数据与公开商品过滤
 let productId
 {
-  const r = await fetch(`${BASE}/api/products?pageSize=100`)
+  const r = await fetch(`${BASE}/api/products?pageSize=100`, { headers: adminAuth })
   const { products } = await j(r)
-  check('GET /api/products 无 token 200 + 返回种子数据', r.status === 200 && products.length >= 8, `n=${products.length}`)
+  check('GET /api/products 管理端返回种子数据', r.status === 200 && products.length >= 8, `n=${products.length}`)
   productId = products[0].id
+
+  const publicList = await fetch(`${BASE}/api/products?pageSize=100`)
+  const publicBody = await j(publicList)
+  check(
+    '公开商品列表只返回上架商品',
+    publicList.status === 200 && publicBody.products.length > 0 && publicBody.products.every((p) => p.status === 'on')
+  )
 
   check(
     '商品列表带 skus 且派生字段与 SKU 汇总一致',
@@ -196,13 +214,36 @@ let productId
     JSON.stringify(s)
   )
 
-  const q = await j(await fetch(`${BASE}/api/products?search=${encodeURIComponent('耳机')}`))
+  const q = await j(await fetch(`${BASE}/api/products?search=${encodeURIComponent('耳机')}`, { headers: adminAuth }))
   const hitEarphone = (p) => p.name.includes('耳机') || (p.description ?? '').includes('耳机')
   check(
     '搜索「耳机」结果与全量列表对账',
     q.products.length === products.filter(hitEarphone).length && q.products.every(hitEarphone),
     `n=${q.products.length} expect=${products.filter(hitEarphone).length}`
   )
+
+  const offCreate = await fetch(`${BASE}/api/products`, {
+    method: 'POST', headers: adminAuth,
+    body: JSON.stringify({
+      name: '公开过滤测试', category: '测试', price: 1, stock: 1, description: '', status: 'off',
+      images: [], skus: [{ name: '默认规格', price: 1, stock: 1 }],
+    }),
+  })
+  const offBody = await j(offCreate)
+  offProductId = offBody.product?.id ?? 0
+  check('创建下架商品用于公开过滤回归', offCreate.status === 201 && offProductId > 0)
+
+  const filtered = await j(await fetch(`${BASE}/api/products?search=${encodeURIComponent('公开过滤测试')}&status=off`))
+  check('公开列表传 status=off 也无法查看下架商品', !filtered.products.some((p) => p.id === offProductId))
+  const adminFiltered = await j(await fetch(
+    `${BASE}/api/products?search=${encodeURIComponent('公开过滤测试')}&status=off`, { headers: adminAuth }
+  ))
+  check('管理端仍可筛选下架商品', adminFiltered.products.some((p) => p.id === offProductId && p.status === 'off'))
+
+  const publicDetail = await fetch(`${BASE}/api/products/${offProductId}`)
+  check('公开详情对下架商品返回 404', publicDetail.status === 404)
+  const adminDetail = await fetch(`${BASE}/api/products/${offProductId}`, { headers: adminAuth })
+  check('管理端可查看下架商品详情', adminDetail.status === 200 && (await j(adminDetail)).product?.id === offProductId)
 }
 
 // 参数校验
@@ -235,6 +276,20 @@ let uploadedUrl
 
   const img = await fetch(`${BASE}${uploadedUrl}`)
   check('上传文件可访问', img.status === 200 && (await img.arrayBuffer()).byteLength === PNG.length)
+
+  const fakeFd = new FormData()
+  fakeFd.append('file', new Blob(['<script>alert(1)</script>'], { type: 'image/png' }), 'fake.png')
+  const fake = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST', headers: { Authorization: adminAuth.Authorization }, body: fakeFd,
+  })
+  check('伪造 PNG 内容被魔数校验拒绝 400', fake.status === 400)
+
+  const mismatchFd = new FormData()
+  mismatchFd.append('file', new Blob([PNG], { type: 'image/jpeg' }), 'mismatch.jpg')
+  const mismatch = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST', headers: { Authorization: adminAuth.Authorization }, body: mismatchFd,
+  })
+  check('实际 PNG 但声明 JPEG 被拒绝 400', mismatch.status === 400)
 }
 
 // 商品 CRUD（创建/更新均需携带 skus，价格/库存以规格为准派生）
@@ -326,26 +381,33 @@ let uploadedUrl
   check('DELETE 有商品的分类被拒绝', await used)
 }
 
-// 列表查询：分页 / 排序 / 分类筛选 / 低库存筛选（与全量列表对账，须在增删用例前跑）
+// 列表查询：分页 / 排序 / 分类筛选 / 低库存筛选（管理端与全量列表对账，须在增删用例前跑）
 {
-  const all = (await j(await fetch(`${BASE}/api/products?pageSize=100`))).products
+  const all = (await j(await fetch(`${BASE}/api/products?pageSize=100`, { headers: adminAuth }))).products
 
-  const p2 = await j(await fetch(`${BASE}/api/products?page=2&pageSize=5`))
+  const p2 = await j(await fetch(`${BASE}/api/products?page=2&pageSize=5`, { headers: adminAuth }))
   check(
     '分页 page=2&pageSize=5',
     p2.page === 2 && p2.products.length === Math.min(5, Math.max(0, p2.total - 5)),
     `n=${p2.products.length} total=${p2.total}`
   )
 
-  const asc = await j(await fetch(`${BASE}/api/products?sort=price&order=asc`))
+  const asc = await j(await fetch(`${BASE}/api/products?sort=price&order=asc`, { headers: adminAuth }))
   const prices = asc.products.map((p) => p.price)
   check('价格升序排序', prices.every((v, i) => i === 0 || prices[i - 1] <= v), prices.join(','))
 
-  const cat = await j(await fetch(`${BASE}/api/products?category=${encodeURIComponent('数码配件')}`))
+  let inheritedSortsSafe = true
+  for (const sort of ['constructor', '__proto__', 'toString']) {
+    const r = await fetch(`${BASE}/api/products?sort=${encodeURIComponent(sort)}`, { headers: adminAuth })
+    inheritedSortsSafe = inheritedSortsSafe && r.status === 200 && Array.isArray((await j(r)).products)
+  }
+  check('排序白名单拒绝原型链继承键且不返回 500', inheritedSortsSafe)
+
+  const cat = await j(await fetch(`${BASE}/api/products?category=${encodeURIComponent('数码配件')}`, { headers: adminAuth }))
   const catExpect = all.filter((p) => p.category === '数码配件').length
   check('按分类筛选', cat.total === catExpect && cat.products.every((p) => p.category === '数码配件'), `total=${cat.total} expect=${catExpect}`)
 
-  const low = await j(await fetch(`${BASE}/api/products?lowStock=1`))
+  const low = await j(await fetch(`${BASE}/api/products?lowStock=1`, { headers: adminAuth }))
   const lowExpect = all.filter((p) => p.stock < 10).length
   check('低库存筛选', low.total === lowExpect && low.products.every((p) => p.stock < 10), `total=${low.total} expect=${lowExpect}`)
 }
@@ -469,6 +531,31 @@ let uploadedUrl
     logs.some((l) => l.reason === 'adjust' && l.sku_id === red.id && l.delta === 3 && l.stock_after === 8)
   )
 
+  const blue = cb.product.skus[1]
+  const edit = await fetch(`${BASE}/api/products/${cb.product.id}`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({
+      ...cb.product,
+      skus: [
+        { ...red, stock: 9 },
+        { ...blue, stock: 6 },
+      ],
+    }),
+  })
+  const editBody = await j(edit)
+  check(
+    '商品编辑库存后派生库存保持正确',
+    edit.status === 200 && editBody.product?.stock === 15 &&
+      editBody.product?.skus?.find((s) => s.id === red.id)?.stock === 9 &&
+      editBody.product?.skus?.find((s) => s.id === blue.id)?.stock === 6
+  )
+  const editLogs = (await j(await fetch(`${BASE}/api/products/${cb.product.id}/stock-logs`, { headers: adminAuth }))).logs
+  check(
+    '商品编辑按新旧库存差写 adjust 流水',
+    editLogs.some((l) => l.reason === 'adjust' && l.sku_id === red.id && l.delta === 1 && l.stock_after === 9 && l.ref === '商品编辑') &&
+      editLogs.some((l) => l.reason === 'adjust' && l.sku_id === blue.id && l.delta === -1 && l.stock_after === 6 && l.ref === '商品编辑')
+  )
+
   await fetch(`${BASE}/api/products/${cb.product.id}`, { method: 'DELETE', headers: adminAuth })
 }
 
@@ -517,6 +604,30 @@ let uploadedUrl
   const low = await fetch(`${BASE}/api/products/export.csv?lowStock=1`, { headers: adminAuth })
   const lowText = await low.text()
   check('export.csv 低库存过滤', lowText.includes('智能手环 9') && !lowText.includes('机械键盘'))
+
+  const formulaValues = ['=2+2', '+2+2', '-2+2', '@SUM(1,1)']
+  const formulaIds = []
+  for (const name of formulaValues) {
+    const created = await fetch(`${BASE}/api/products`, {
+      method: 'POST', headers: adminAuth,
+      body: JSON.stringify({
+        name, category: 'CSV安全', price: 1, stock: 1, description: '', status: 'on',
+        images: [], skus: [{ name: '默认规格', price: 1, stock: 1 }],
+      }),
+    })
+    const body = await j(created)
+    if (created.status === 201) formulaIds.push(body.product.id)
+  }
+  const formulaCsv = await fetch(`${BASE}/api/products/export.csv?category=${encodeURIComponent('CSV安全')}`, { headers: adminAuth })
+  const formulaText = await formulaCsv.text()
+  check(
+    '商品 CSV 对 = + - @ 开头的值加单引号防公式注入',
+    formulaCsv.status === 200 && formulaIds.length === formulaValues.length &&
+      formulaValues.every((value) => formulaText.includes(`"'${value}"`))
+  )
+  for (const id of formulaIds) {
+    await fetch(`${BASE}/api/products/${id}`, { method: 'DELETE', headers: adminAuth })
+  }
 }
 
 // 分类排序与迁移删除
@@ -576,6 +687,33 @@ let uploadedUrl
 
 // 登录鉴权与地址管理（Mock 模式：openid = dev_<code>）
 {
+  const invalidCodes = ['../admin', 'code with space', 'x'.repeat(65)]
+  let invalidCodesRejected = true
+  for (const code of invalidCodes) {
+    const r = await fetch(`${BASE}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.231' },
+      body: JSON.stringify({ code }),
+    })
+    const body = await j(r)
+    invalidCodesRejected = invalidCodesRejected && r.status === 400 && Array.isArray(body.errors)
+  }
+  check('Mock 登录拒绝路径字符、空格与超长 code', invalidCodesRejected)
+
+  const longNick = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.232' },
+    body: JSON.stringify({ code: 'invalid-long-nick', nickName: 'x'.repeat(25) }),
+  })
+  check('登录拒绝超过 24 字昵称', longNick.status === 400)
+
+  const invalidAvatar = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.232' },
+    body: JSON.stringify({ code: 'invalid-avatar-url', avatarUrl: 'not-a-url' }),
+  })
+  check('登录拒绝非法头像 URL', invalidAvatar.status === 400)
+
   const login = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -585,6 +723,11 @@ let uploadedUrl
   check('POST /auth/login Mock 登录 200 + token', login.status === 200 && typeof lb.token === 'string' && lb.user?.openid === 'dev_smoke-user-1')
   const token = lb.token
   const auth = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+
+  const userOffDetail = await fetch(`${BASE}/api/products/${offProductId}`, { headers: auth })
+  check('普通用户令牌访问下架商品详情同样 404', userOffDetail.status === 404)
+  await fetch(`${BASE}/api/products/${offProductId}`, { method: 'DELETE', headers: adminAuth })
+  offProductId = 0
 
   const noToken = await fetch(`${BASE}/api/auth/me`)
   check('GET /auth/me 无 token 401', noToken.status === 401)
@@ -653,6 +796,11 @@ let uploadedUrl
   const users = await j(await fetch(`${BASE}/api/users`, { headers: adminAuth }))
   const u = users.users.find((x) => x.id === lb.user.id)
   check('GET /users 含新用户且地址数正确', !!u && u.address_count === 1, `address_count=${u?.address_count}`)
+  check(
+    'GET /users 默认分页与全量统计',
+    users.page === 1 && users.pageSize === 10 && users.total >= 1 && users.addressTotal >= 1 && users.users.length <= 10,
+    JSON.stringify({ total: users.total, addressTotal: users.addressTotal, page: users.page, pageSize: users.pageSize })
+  )
 
   // 清理本段剩余地址，避免污染后续运行
   const rest = await j(await fetch(`${BASE}/api/addresses`, { headers: auth }))
@@ -732,18 +880,26 @@ let uploadedUrl
   const noToken = await fetch(`${BASE}/api/cart`)
   check('GET /cart 无 token 401', noToken.status === 401)
 
-  const mkProduct = async (name, price, stock) => {
+  const snapshotFd = new FormData()
+  snapshotFd.append('file', new Blob([PNG], { type: 'image/png' }), 'order-snapshot.png')
+  const snapshotUpload = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST', headers: { Authorization: adminAuth.Authorization }, body: snapshotFd,
+  })
+  snapshotUrl = (await j(snapshotUpload)).url ?? ''
+  check('上传订单快照测试图片', snapshotUpload.status === 201 && snapshotUrl.startsWith('/uploads/'))
+
+  const mkProduct = async (name, price, stock, images = []) => {
     const r = await fetch(`${BASE}/api/products`, {
       method: 'POST',
       headers: adminAuth,
       body: JSON.stringify({
         name, category: '测试', price, stock, description: '', status: 'on',
-        images: [], skus: [{ name: '默认规格', price, stock }],
+        images, skus: [{ name: '默认规格', price, stock }],
       }),
     })
     return (await j(r)).product
   }
-  const p1 = await mkProduct('下单测试', 10, 3)
+  const p1 = await mkProduct('下单测试', 10, 3, [snapshotUrl])
   const p1Sku = p1.skus[0]
 
   const noSkuAdd = await fetch(`${BASE}/api/cart`, {
@@ -780,17 +936,21 @@ let uploadedUrl
 
   const create = await fetch(`${BASE}/api/orders`, {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ source: { type: 'cart', item_ids: [addBody.items[0].id] }, address_id: addr.address.id, remark: '尽快发货' }),
+    body: JSON.stringify({ source: { type: 'cart', item_ids: [addBody.items[0].id] }, address_id: addr.address.id, remark: '=尽快发货' }),
   })
   const { order } = await j(create)
   check(
     'POST /orders 下单 201 + 金额/状态/快照正确',
     create.status === 201 && order?.total_amount === 30 && order?.status === 'pending' &&
       order?.items?.length === 1 && order.items[0].product_name === '下单测试' && order.items[0].price === 10 &&
-      order?.receiver === '王五' && order?.remark === '尽快发货' && /^WS\d{20}$/.test(order?.order_no ?? ''),
+      order?.receiver === '王五' && order?.remark === '=尽快发货' && /^WS\d{20}$/.test(order?.order_no ?? ''),
     `order_no=${order?.order_no}`
   )
-  check('订单明细快照带 sku_id / sku_name', order?.items?.[0]?.sku_id === p1Sku.id && order?.items?.[0]?.sku_name === p1Sku.name)
+  check(
+    '订单明细快照带 sku_id / sku_name / product_image',
+    order?.items?.[0]?.sku_id === p1Sku.id && order?.items?.[0]?.sku_name === p1Sku.name &&
+      order?.items?.[0]?.product_image === snapshotUrl
+  )
 
   const cartAfter = await j(await fetch(`${BASE}/api/cart`, { headers: auth }))
   check('下单后购物车已清空', cartAfter.items.length === 0)
@@ -870,6 +1030,100 @@ let uploadedUrl
     JSON.stringify(logs2.map((l) => [l.reason, l.delta, l.ref]))
   )
 
+  const cancelAgain = await fetch(`${BASE}/api/orders/${o2.id}/cancel`, { method: 'POST', headers: auth, body: JSON.stringify({}) })
+  const p2AfterAgain = await j(await fetch(`${BASE}/api/products/${p2.id}`))
+  const cancelLogsAgain = (await j(await fetch(`${BASE}/api/products/${p2.id}/stock-logs`, { headers: adminAuth }))).logs
+  check(
+    '重复取消返回 400 且不重复回补库存或流水',
+    cancelAgain.status === 400 && p2AfterAgain.product?.stock === 2 &&
+      cancelLogsAgain.filter((l) => l.reason === 'cancel' && l.ref === o2.order_no).length === 1
+  )
+
+  const crossCreate = await fetch(`${BASE}/api/products`, {
+    method: 'POST', headers: adminAuth,
+    body: JSON.stringify({
+      name: '跨规格回补测试', category: '测试', price: 10, stock: 6, description: '', status: 'on', images: [],
+      skus: [{ name: '红色', price: 10, stock: 1 }, { name: '蓝色', price: 10, stock: 5 }],
+    }),
+  })
+  const crossBody = await j(crossCreate)
+  const crossProduct = crossBody.product
+  const crossRed = crossProduct.skus[0]
+  const crossBlue = crossProduct.skus[1]
+  const crossOrderRes = await fetch(`${BASE}/api/orders`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ source: { type: 'direct', product_id: crossProduct.id, sku_id: crossRed.id, quantity: 1 }, address_id: addr.address.id }),
+  })
+  const { order: crossOrder } = await j(crossOrderRes)
+  await fetch(`${BASE}/api/orders/${crossOrder.id}/pay`, { method: 'POST', headers: auth })
+  const crossSkusAfterCancel = [{ ...crossBlue, stock: 5 }]
+  const blockedRemoval = await fetch(`${BASE}/api/products/${crossProduct.id}`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...crossProduct, skus: crossSkusAfterCancel }),
+  })
+  const crossAfterBlocked = await j(await fetch(`${BASE}/api/products/${crossProduct.id}`))
+  check(
+    '待处理订单引用规格时禁止删除且不改变库存',
+    blockedRemoval.status === 400 && crossAfterBlocked.product?.skus?.length === 2 &&
+      crossAfterBlocked.product?.skus?.find((s) => s.id === crossRed.id)?.stock === 0 &&
+      crossAfterBlocked.product?.skus?.find((s) => s.id === crossBlue.id)?.stock === 5
+  )
+
+  const crossCancel = await fetch(`${BASE}/api/admin/orders/${crossOrder.id}/cancel`, {
+    method: 'POST', headers: adminAuth, body: JSON.stringify({ reason: '规格删除保护回归' }),
+  })
+  const crossAfterCancel = await j(await fetch(`${BASE}/api/products/${crossProduct.id}`))
+  check(
+    '取消订单只回补原规格',
+    crossCancel.status === 200 && crossAfterCancel.product?.skus?.find((s) => s.id === crossRed.id)?.stock === 1 &&
+      crossAfterCancel.product?.skus?.find((s) => s.id === crossBlue.id)?.stock === 5
+  )
+
+  const allowedRemoval = await fetch(`${BASE}/api/products/${crossProduct.id}`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...crossAfterCancel.product, skus: crossSkusAfterCancel }),
+  })
+  const removalLogs = (await j(await fetch(`${BASE}/api/products/${crossProduct.id}/stock-logs`, { headers: adminAuth }))).logs
+  check(
+    '订单取消后允许删除规格并记录库存出库流水',
+    allowedRemoval.status === 200 &&
+      removalLogs.some((l) => l.reason === 'adjust' && l.sku_id === crossRed.id && l.delta === -1 && l.stock_after === 0 && l.ref === '商品编辑：规格已删除')
+  )
+  await fetch(`${BASE}/api/products/${crossProduct.id}`, { method: 'DELETE', headers: adminAuth })
+
+  // 自包含测试将订单超时缩短为 2 秒；直接 pnpm smoke 不等待生产默认时长
+  if (process.env.SMOKE_ORDER_TIMEOUT === '1') {
+    const timeoutCreate = await fetch(`${BASE}/api/orders`, {
+      method: 'POST', headers: auth,
+      body: JSON.stringify({ source: { type: 'direct', product_id: p2.id, sku_id: p2Sku.id, quantity: 1 }, address_id: addr.address.id }),
+    })
+    const timeoutBody = await j(timeoutCreate)
+    check('创建待支付订单用于超时关单回归', timeoutCreate.status === 201 && timeoutBody.order?.status === 'pending')
+
+    let expiredOrder
+    if (timeoutCreate.status === 201) {
+      for (let i = 0; i < 30; i++) {
+        const current = await j(await fetch(`${BASE}/api/orders/${timeoutBody.order.id}`, { headers: auth }))
+        if (current.order?.status === 'cancelled') {
+          expiredOrder = current.order
+          break
+        }
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+    check(
+      '超时未支付订单自动取消并记录原因',
+      expiredOrder?.status === 'cancelled' && expiredOrder?.cancel_reason === '超时未支付，系统自动取消' && !!expiredOrder?.cancelled_at
+    )
+    const p2Timeout = await j(await fetch(`${BASE}/api/products/${p2.id}`))
+    check('超时关单后库存回补且幂等', p2Timeout.product?.stock === 2, `stock=${p2Timeout.product?.stock}`)
+    const timeoutLogs = (await j(await fetch(`${BASE}/api/products/${p2.id}/stock-logs`, { headers: adminAuth }))).logs
+    check(
+      '超时关单写入系统取消流水',
+      timeoutLogs.some(l => l.reason === 'cancel' && l.ref === timeoutBody.order?.order_no && l.operator === 'system:order-timeout' && l.delta === 1)
+    )
+  }
+
   // 用户详情统计与该用户订单分页
   const ud = await j(await fetch(`${BASE}/api/users/${user2.id}`, { headers: adminAuth }))
   check(
@@ -915,7 +1169,27 @@ let uploadedUrl
   const steal = await fetch(`${BASE}/api/orders/${order.id}`, { headers: otherAuth })
   check('越权访问他人订单 404', steal.status === 404)
 
+  const userPage1 = await j(await fetch(`${BASE}/api/users?page=1&pageSize=2`, { headers: adminAuth }))
+  const userPage2 = await j(await fetch(`${BASE}/api/users?page=2&pageSize=2`, { headers: adminAuth }))
+  const pagedUsers = [...userPage1.users, ...userPage2.users]
+  check(
+    'GET /users 服务端分页结构与总数',
+    userPage1.users.length === 2 && userPage2.users.length >= 1 &&
+      userPage1.page === 1 && userPage2.page === 2 && userPage1.pageSize === 2 && userPage2.pageSize === 2 &&
+      userPage1.total >= 4 && userPage1.total === userPage2.total && userPage1.addressTotal === userPage2.addressTotal,
+    JSON.stringify({ total: userPage1.total, page1: userPage1.users.length, page2: userPage2.users.length })
+  )
+  check(
+    'GET /users 分页按注册倒序且跨页不重叠',
+    new Set(pagedUsers.map((u) => u.id)).size === pagedUsers.length &&
+      pagedUsers.every((u, i) => i === 0 || pagedUsers[i - 1].id > u.id)
+  )
+  const cappedUsers = await j(await fetch(`${BASE}/api/users?page=1&pageSize=999`, { headers: adminAuth }))
+  check('GET /users 单页上限 50', cappedUsers.pageSize === 50 && cappedUsers.users.length <= 50)
+
   await fetch(`${BASE}/api/products/${p1.id}`, { method: 'DELETE', headers: adminAuth })
+  const snapshotAfterDelete = await fetch(`${BASE}${snapshotUrl}`)
+  check('删除商品不会误删历史订单快照图片', snapshotAfterDelete.status === 200)
   await fetch(`${BASE}/api/products/${p2.id}`, { method: 'DELETE', headers: adminAuth })
   // 下单用的是地址快照，删除地址不影响已生成的订单
   await fetch(`${BASE}/api/addresses/${addr.address.id}`, { method: 'DELETE', headers: auth })
@@ -945,6 +1219,7 @@ let uploadedUrl
     '订单 export.csv 按状态 + 关键词过滤命中',
     filtered.status === 200 && fText.includes(completedOrderNo) && fText.includes('已完成')
   )
+  check('订单 CSV 同样防御公式注入', fText.includes(`"'=尽快发货"`))
 
   const noTokenClean = await fetch(`${BASE}/api/admin/uploads/cleanup`, { method: 'POST' })
   check('POST /admin/uploads/cleanup 无 token 401', noTokenClean.status === 401)
@@ -957,6 +1232,8 @@ let uploadedUrl
       Number.isInteger(cleanBody.freedBytes) && cleanBody.freedBytes >= 0,
     JSON.stringify(cleanBody)
   )
+  const snapshotAfterCleanup = await fetch(`${BASE}${snapshotUrl}`)
+  check('孤儿文件清理保留历史订单快照图片', snapshotAfterCleanup.status === 200)
 }
 
 // 404 与错误体
@@ -971,6 +1248,41 @@ let uploadedUrl
     body: '{invalid json',
   })
   check('非法 JSON 400', bad.status === 400)
+}
+
+// IP 限流：每组使用独立测试 IP，既验证 trust proxy，又避免耗尽真实开发客户端的额度
+{
+  async function assertRateLimit(label, endpoint, expectedStatus) {
+    const testIp = `203.0.113.${Math.floor(Math.random() * 200) + 1}`
+    let hasHeaders = false
+    let passedBeforeLimit = false
+    let limited = false
+    let hasRetryAfter = false
+
+    for (let i = 0; i < 100; i++) {
+      const r = await fetch(`${BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': testIp },
+        body: '{}',
+      })
+      if (i === 0) {
+        hasHeaders = Number(r.headers.get('ratelimit-limit')) > 0 && Number(r.headers.get('ratelimit-remaining')) >= 0
+      }
+      if (r.status === 429) {
+        const body = await j(r)
+        limited = Array.isArray(body.errors)
+        hasRetryAfter = Number(r.headers.get('retry-after')) >= 1
+        break
+      }
+      passedBeforeLimit = r.status === expectedStatus
+    }
+    check(`${label}按 X-Forwarded-For 限流并返回 429 / Retry-After`, hasHeaders && passedBeforeLimit && limited && hasRetryAfter)
+  }
+
+  await assertRateLimit('小程序登录', '/api/auth/login', 400)
+  await assertRateLimit('管理员登录', '/api/admin/auth/login', 400)
+  await assertRateLimit('创建订单', '/api/orders', 401)
+  await assertRateLimit('图片上传', '/api/uploads', 401)
 }
 
 console.log(`\n${passed}/${total} 通过`)

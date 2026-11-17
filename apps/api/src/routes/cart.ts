@@ -23,20 +23,11 @@ interface CartRow {
   sku_name: string
   sku_price: number
   sku_stock: number
-  sku_image: string
+  image: string
 }
 
-function firstProductImage(productId: number): string {
-  return (
-    (db.prepare('SELECT url FROM product_images WHERE product_id=? ORDER BY sort_order, id LIMIT 1').get(productId) as
-      | { url: string }
-      | undefined)?.url ?? ''
-  )
-}
-
-/** 购物车行 → 响应项：价格/库存/小计/失效标记全部按 SKU 计算，图片取 SKU 图（为空回退商品首图） */
+/** 购物车行 → 响应项：价格/库存/小计/失效标记全部按 SKU 计算，图片由 SQL 回退到商品首图 */
 function toCartItem(row: CartRow): CartItem {
-  const image = row.sku_image || firstProductImage(row.product_id)
   const subtotal = Math.round(row.sku_price * row.quantity * 100) / 100
   return {
     id: row.id,
@@ -51,7 +42,7 @@ function toCartItem(row: CartRow): CartItem {
     price: row.sku_price,
     stock: row.sku_stock,
     status: row.status,
-    image,
+    image: row.image,
     subtotal,
     invalid: row.status !== 'on' || row.sku_stock < row.quantity,
   }
@@ -60,7 +51,10 @@ function toCartItem(row: CartRow): CartItem {
 function listCart(uid: number): CartListResult {
   const rows = db
     .prepare(
-      `SELECT c.*, p.name, p.status, s.name AS sku_name, s.price AS sku_price, s.stock AS sku_stock, s.image AS sku_image
+      `SELECT c.*, p.name, p.status, s.name AS sku_name, s.price AS sku_price, s.stock AS sku_stock,
+              COALESCE(NULLIF(s.image, ''), (
+                SELECT i.url FROM product_images i WHERE i.product_id=c.product_id ORDER BY i.sort_order, i.id LIMIT 1
+              )) AS image
        FROM cart_items c
        JOIN product_skus s ON s.id = c.sku_id
        JOIN products p ON p.id = c.product_id

@@ -1,13 +1,14 @@
 import type { Category, Product } from '@weshop/shared'
 import { ScrollView, View } from '@tarojs/components'
-import Taro, { useDidShow } from '@tarojs/taro'
-import { useCallback, useEffect, useState } from 'react'
+import { useDidShow } from '@tarojs/taro'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ProductCard } from '@/components/product-card'
+import { PAGE_SIZE } from '@/constants'
 import { fetchCategories, fetchProducts } from '@/services/api'
 import { setTabSelected, TAB_INDEX } from '@/services/tabbar'
+import { LatestRequest } from '@/utils/latest-request'
+import { toast } from '@/utils/toast'
 import './index.scss'
-
-const PAGE_SIZE = 10
 
 export default function CategoryPage() {
   useDidShow(() => setTabSelected(TAB_INDEX.category))
@@ -17,6 +18,9 @@ export default function CategoryPage() {
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const latestRequestRef = useRef(new LatestRequest())
+
+  useEffect(() => () => latestRequestRef.current.invalidate(), [])
 
   // 首次进入加载分类，默认选中第一个
   useEffect(() => {
@@ -29,7 +33,7 @@ export default function CategoryPage() {
       })
       .catch((err) => {
         setLoading(false)
-        Taro.showToast({ title: err instanceof Error ? err.message : '加载失败', icon: 'none' })
+        toast(err, '加载失败')
       })
   }, [])
 
@@ -40,18 +44,25 @@ export default function CategoryPage() {
     async (pageNum: number, replace: boolean) => {
       if (!activeName)
         return
+      const requestId = latestRequestRef.current.next()
+      if (replace)
+        setProducts([])
       setLoading(true)
       try {
         const res = await fetchProducts({ category: activeName, status: 'on', page: pageNum, pageSize: PAGE_SIZE })
+        if (!latestRequestRef.current.isLatest(requestId))
+          return
         setTotal(res.total)
         setPage(pageNum)
         setProducts(prev => (replace ? res.products : [...prev, ...res.products]))
       }
       catch (err) {
-        Taro.showToast({ title: err instanceof Error ? err.message : '加载失败', icon: 'none' })
+        if (latestRequestRef.current.isLatest(requestId))
+          toast(err, '加载失败')
       }
       finally {
-        setLoading(false)
+        if (latestRequestRef.current.isLatest(requestId))
+          setLoading(false)
       }
     },
     [activeName],
@@ -59,7 +70,6 @@ export default function CategoryPage() {
 
   // 切换分类时回到第一页
   useEffect(() => {
-    setProducts([])
     load(1, true)
   }, [load])
 
