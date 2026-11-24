@@ -14,7 +14,9 @@
     "typecheck": "pnpm --filter api typecheck && pnpm --filter miniprogram typecheck",
     "test": "pnpm --filter api test && pnpm --filter miniprogram test && pnpm --filter web test && node scripts/test-api.mjs",
     "smoke": "node scripts/smoke-api-ts.mjs",
-    "seed": "pnpm --filter api seed"
+    "seed": "pnpm --filter api seed",
+    "docker:restart": "docker compose restart",
+    "docker:redeploy": "docker compose config --quiet && docker compose up -d --build --force-recreate"
   },
   "keywords": [],
   "author": "",

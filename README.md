@@ -77,8 +77,12 @@ CI（`.github/workflows/ci.yml`）在 push 到 main 与 PR 时依次执行：生
 
 ## 构建与部署
 
+完整的服务器部署、HTTPS、镜像打包、更新回滚与备份恢复流程见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
 - `pnpm build:web` — 构建管理后台，产物在 `apps/web/dist`；同时生成 hidden sourcemap（`.js.map`，业务 JS 不附加 `sourceMappingURL` 引用）
 - `docker compose up -d --build` — 启动 web（宿主机 8080）+ api；SQLite 数据库与上传文件持久化在 `api-data` volume。API 使用多阶段镜像和 `pnpm deploy --prod`，运行镜像不包含 ESLint、Vitest 等开发依赖
+- `pnpm docker:restart` — 重启现有 web + api 容器，不重新构建镜像，也不会应用新代码或新的 Compose 配置；追加 `api` 或 `web` 可只重启指定服务
+- `pnpm docker:redeploy` — 校验 Compose 配置，重新构建镜像并强制重建 web + api 服务，保留 `api-data` 数据卷
 - Ktor 演示服务：`docker compose --profile ktor up -d --build`（`apps/server` 仅作健康检查演示，宿主机 8081）
 - 小程序发布：`pnpm --filter miniprogram build:weapp` 后用微信开发者工具上传。发布前把 `apps/miniprogram/project.config.json` 的 `appid` 换成正式 appid，并把 `apps/miniprogram/config/prod.ts` 的 `API_BASE` 改成生产 API 域名（必须为 HTTPS 且在微信公众平台配置合法域名）
 
