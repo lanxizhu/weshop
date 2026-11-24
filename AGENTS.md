@@ -4,7 +4,7 @@
 
 WeShop 商城 monorepo（pnpm workspace）：
 
-- `apps/api` — Express 5 + node:sqlite，tsx 直跑 TypeScript，端口 7101
+- `apps/api` — Express 5 + MySQL，tsx 直跑 TypeScript，端口 7101；本地与生产均只使用 MySQL
 - `apps/web` — React 19 + Vite 7 管理后台，dev 端口 7100（代理到 api）
 - `apps/miniprogram` — Taro 4.3 + React 18 微信小程序
 - `apps/server` — Ktor 演示服务
@@ -46,7 +46,7 @@ pnpm typecheck && pnpm -r lint && pnpm test
 pnpm build:web
 ```
 
-- `pnpm test` 是自包含测试（临时目录 + 独立端口），安全；`pnpm smoke` 打开发库 localhost:7101，慎用
+- `pnpm test` 需可用 MySQL，会创建并删除独立临时数据库和上传目录；`pnpm smoke` 打开发库 localhost:7101，慎用
 - 冒烟脚本 `scripts/smoke-api-ts.mjs` 内含改密测试（会改回 admin123，幂等）
 - API 有新行为时，同步在 `scripts/smoke-api-ts.mjs` 加回归用例
 

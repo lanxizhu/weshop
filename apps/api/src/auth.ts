@@ -14,7 +14,7 @@ interface GuardMiddleware {
     req: Request<P, ResBody, ReqBody, ReqQuery, LocalsObj>,
     res: Response<ResBody, LocalsObj>,
     next: NextFunction
-  ): void
+  ): void | Promise<void>
 }
 
 interface TokenPayload {
@@ -38,8 +38,8 @@ export function signToken(uid: number): string {
 }
 
 /** 签发管理员登录令牌（payload 带 role='admin'、管理员 id 与当前 token_version 快照） */
-export function signAdminToken(aid: number): string {
-  const tv = getAdminAuthById(aid)?.token_version ?? 0
+export async function signAdminToken(aid: number): Promise<string> {
+  const tv = (await getAdminAuthById(aid))?.token_version ?? 0
   return sign({ aid, role: 'admin', tv, exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS })
 }
 
@@ -66,10 +66,10 @@ function extractPayload(req: Parameters<RequestHandler>[0]): TokenPayload | null
 }
 
 /** 鉴权中间件：Authorization: Bearer <token>，通过后把用户 id 写入 res.locals.uid */
-export const requireAuth: RequestHandler = (req, res, next) => {
+export const requireAuth: RequestHandler = async (req, res, next) => {
   const payload = extractPayload(req)
   const uid = payload?.uid
-  const user = typeof uid === 'number' ? getUserById(uid) : undefined
+  const user = typeof uid === 'number' ? await getUserById(uid) : undefined
   if (typeof uid !== 'number' || !user) {
     res.status(401).json({ errors: ['请先登录'] })
     return
@@ -82,11 +82,11 @@ export const requireAuth: RequestHandler = (req, res, next) => {
   next()
 }
 
-const requireAdminImpl: RequestHandler = (req, res, next) => {
+const requireAdminImpl: RequestHandler = async (req, res, next) => {
   const payload = extractPayload(req)
   const aid = payload?.role === 'admin' ? payload.aid : undefined
   // 顺带确认管理员仍存在；payload.tv 与库中 token_version 不一致说明令牌已因改密被吊销
-  const admin = typeof aid === 'number' ? getAdminAuthById(aid) : undefined
+  const admin = typeof aid === 'number' ? await getAdminAuthById(aid) : undefined
   if (typeof aid !== 'number' || !admin || payload?.tv !== admin.token_version) {
     res.status(401).json({ errors: ['请先登录'] })
     return
@@ -99,10 +99,10 @@ const requireAdminImpl: RequestHandler = (req, res, next) => {
 export const requireAdmin = requireAdminImpl as GuardMiddleware
 
 /** 可选管理员身份：有效管理员令牌可查看管理端数据；匿名、用户令牌或无效令牌仍按公开访问处理 */
-export const optionalAdmin: RequestHandler = (req, res, next) => {
+export const optionalAdmin: RequestHandler = async (req, res, next) => {
   const payload = extractPayload(req)
   const aid = payload?.role === 'admin' ? payload.aid : undefined
-  const admin = typeof aid === 'number' ? getAdminAuthById(aid) : undefined
+  const admin = typeof aid === 'number' ? await getAdminAuthById(aid) : undefined
   if (typeof aid === 'number' && admin && payload?.tv === admin.token_version) {
     res.locals.adminId = aid
   }
@@ -110,15 +110,15 @@ export const optionalAdmin: RequestHandler = (req, res, next) => {
 }
 
 /** 宽松鉴权：用户令牌或管理员令牌任一有效即可（如小程序头像上传与管理端图片上传共用的接口）；管理员令牌同样校验 token_version */
-export const requireAnyAuth: RequestHandler = (req, res, next) => {
+export const requireAnyAuth: RequestHandler = async (req, res, next) => {
   const payload = extractPayload(req)
-  const admin = payload?.role === 'admin' && typeof payload.aid === 'number' ? getAdminAuthById(payload.aid) : undefined
+  const admin = payload?.role === 'admin' && typeof payload.aid === 'number' ? await getAdminAuthById(payload.aid) : undefined
   if (admin && payload?.tv === admin.token_version) {
     res.locals.adminId = payload!.aid
     next()
     return
   }
-  const user = typeof payload?.uid === 'number' ? getUserById(payload.uid) : undefined
+  const user = typeof payload?.uid === 'number' ? await getUserById(payload.uid) : undefined
   if (user) {
     if (user.status === 'disabled') {
       res.status(403).json({ errors: ['账号已被禁用，请联系客服'] })

@@ -1,14 +1,15 @@
 # WeShop 部署编排
 #
-# 默认启动：web（管理后台，宿主机 8080 端口） + api（Express，SQLite/上传文件持久化到 volume）。
+# 默认启动：web（管理后台，宿主机 8080 端口） + api（Express） + mysql（8.4）。
+# MySQL 持久化到 mysql-data，上传文件持久化到 api-data；生产仅支持 MySQL。
 # Ktor 演示服务不默认启动，需要时用：
 #   docker compose --profile ktor up -d --build
 #
 # 微信小程序端无法容器化：本地执行 pnpm --filter miniprogram build:weapp 后用微信开发者工具上传发布。
 #
 # 敏感配置通过环境变量注入，必须先复制 .env.example 为 .env 并修改（compose 会自动读取根目录 .env）。
-# API_TOKEN_SECRET / API_ADMIN_PASSWORD 不再提供兜底默认值，未配置时 compose 会直接报错退出；
-# 且容器内 NODE_ENV=production，API 启动时对危险默认值（含微信凭证缺失）做 fail-fast 检查。
+# API_TOKEN_SECRET / API_ADMIN_PASSWORD / MySQL 密码未配置时 compose 会直接报错退出；
+# 容器内 NODE_ENV=production，API 也会对空 MySQL 密码、危险默认值和微信凭证缺失做 fail-fast 检查。
 
 services:
   api:
@@ -19,6 +20,12 @@ services:
     environment:
       API_PORT: 7101
       API_DATA_DIR: /data
+      API_MYSQL_HOST: ${API_MYSQL_HOST:-mysql}
+      API_MYSQL_PORT: ${API_MYSQL_PORT:-3306}
+      API_MYSQL_DATABASE: ${API_MYSQL_DATABASE:-weshop}
+      API_MYSQL_USER: ${API_MYSQL_USER:-weshop}
+      API_MYSQL_PASSWORD: ${API_MYSQL_PASSWORD:?请在 .env 中设置 API_MYSQL_PASSWORD（独立强口令）}
+      API_MYSQL_CONNECTION_LIMIT: ${API_MYSQL_CONNECTION_LIMIT:-10}
       API_ORDER_TIMEOUT_SECONDS: ${API_ORDER_TIMEOUT_SECONDS:-900}
       API_ORDER_SWEEP_INTERVAL_SECONDS: ${API_ORDER_SWEEP_INTERVAL_SECONDS:-30}
       API_LOG_MAX_BYTES: ${API_LOG_MAX_BYTES:-5242880}
@@ -34,6 +41,9 @@ services:
       - api-data:/data
     expose:
       - "7101"
+    depends_on:
+      mysql:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7101/api/healthy"]
       interval: 30s
@@ -52,6 +62,26 @@ services:
       api:
         condition: service_healthy
 
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${API_MYSQL_DATABASE:-weshop}
+      MYSQL_USER: ${API_MYSQL_USER:-weshop}
+      MYSQL_PASSWORD: ${API_MYSQL_PASSWORD:?请在 .env 中设置 API_MYSQL_PASSWORD（独立强口令）}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 中设置 MYSQL_ROOT_PASSWORD（独立强口令）}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD", "--silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   # 可选：Kotlin Ktor 服务（仅 /health），通过 --profile ktor 启用
   server:
     profiles: ["ktor"]
@@ -64,3 +94,4 @@ services:
 
 volumes:
   api-data:
+  mysql-data:

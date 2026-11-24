@@ -1,4 +1,4 @@
-/** 商品模块类型定义（与 apps/api SQLite 表结构对应） */
+/** 商品模块类型定义（与 apps/api MySQL 表结构对应） */
 
 export type ProductStatus = "on" | "off";
 

@@ -1,4 +1,4 @@
-/** 用户模块类型定义（与 apps/api SQLite users 表对应） */
+/** 用户模块类型定义（与 apps/api MySQL users 表对应） */
 
 export interface User {
   id: number;

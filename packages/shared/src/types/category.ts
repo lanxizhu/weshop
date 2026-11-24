@@ -1,4 +1,4 @@
-/** 分类模块类型定义（与 apps/api SQLite 表结构对应） */
+/** 分类模块类型定义（与 apps/api MySQL 表结构对应） */
 
 export interface Category {
   id: number;

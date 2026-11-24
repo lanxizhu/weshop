@@ -1,5 +1,5 @@
-# WeShop CI：生产依赖审计 → lint → 类型检查 → Web/小程序构建 → 全量测试
-# Web 的类型检查含在 build 内，pnpm test 包含 API、小程序、Web 单测及 API 自包含冒烟
+# WeShop CI：生产依赖审计 → lint → 类型检查 → Web/小程序构建 → MySQL 测试
+# Web 的类型检查含在 build 内；API 冒烟使用独立 MySQL 临时数据库
 name: CI
 
 on:
@@ -10,6 +10,18 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: weshop-ci-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pweshop-ci-only --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
     steps:
       - uses: actions/checkout@v4
 
@@ -34,5 +46,10 @@ jobs:
 
       - run: pnpm --filter miniprogram build:weapp
 
-      # 自包含 API 冒烟：临时端口 7821 + 临时 SQLite 库，跑完自动清理
+      # 使用独立 MySQL 临时数据库，跑完自动清理
       - run: pnpm test
+        env:
+          API_MYSQL_HOST: 127.0.0.1
+          API_MYSQL_PORT: 3306
+          API_MYSQL_USER: root
+          API_MYSQL_PASSWORD: weshop-ci-only

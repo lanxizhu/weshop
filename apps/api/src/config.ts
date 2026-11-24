@@ -3,13 +3,21 @@ import path from 'node:path'
 /** 包根目录（apps/api） */
 const pkgRoot = path.resolve(import.meta.dirname, '..')
 
-/**
- * 数据目录：默认沿用重构前的 apps/api/server/ 目录，
- * 以保证已有的 data.db 与 uploads/ 无需迁移。可用环境变量覆盖。
- */
+/** 上传文件的数据目录：默认沿用 apps/api/server/uploads，可用环境变量覆盖 */
 export const DATA_DIR = process.env.API_DATA_DIR ?? path.join(pkgRoot, 'server')
-export const DB_PATH = process.env.API_DB_PATH ?? path.join(DATA_DIR, 'data.db')
 export const UPLOAD_DIR = process.env.API_UPLOAD_DIR ?? path.join(DATA_DIR, 'uploads')
+
+function positiveInteger(raw: string | undefined, fallback: number): number {
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback
+}
+
+export const MYSQL_HOST = process.env.API_MYSQL_HOST ?? '127.0.0.1'
+export const MYSQL_PORT = positiveInteger(process.env.API_MYSQL_PORT, 3306)
+export const MYSQL_DATABASE = process.env.API_MYSQL_DATABASE ?? 'weshop'
+export const MYSQL_USER = process.env.API_MYSQL_USER ?? 'weshop'
+export const MYSQL_PASSWORD = process.env.API_MYSQL_PASSWORD ?? ''
+export const MYSQL_CONNECTION_LIMIT = positiveInteger(process.env.API_MYSQL_CONNECTION_LIMIT, 10)
 
 export const PORT = Number(process.env.API_PORT ?? 7101)
 
@@ -56,6 +64,9 @@ export const ADMIN_PASSWORD = process.env.API_ADMIN_PASSWORD ?? DEV_ADMIN_PASSWO
  */
 if (process.env.NODE_ENV === 'production') {
   const problems: string[] = []
+  if (!MYSQL_PASSWORD) {
+    problems.push('生产环境使用 MySQL 时必须配置 API_MYSQL_PASSWORD')
+  }
   if (!TOKEN_SECRET || TOKEN_SECRET === DEV_TOKEN_SECRET) {
     problems.push('API_TOKEN_SECRET 未配置或仍为开发默认值，攻击者可据此伪造管理员令牌')
   }

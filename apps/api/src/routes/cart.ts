@@ -48,105 +48,99 @@ function toCartItem(row: CartRow): CartItem {
   }
 }
 
-function listCart(uid: number): CartListResult {
-  const rows = db
-    .prepare(
-      `SELECT c.*, p.name, p.status, s.name AS sku_name, s.price AS sku_price, s.stock AS sku_stock,
-              COALESCE(NULLIF(s.image, ''), (
-                SELECT i.url FROM product_images i WHERE i.product_id=c.product_id ORDER BY i.sort_order, i.id LIMIT 1
-              )) AS image
-       FROM cart_items c
-       JOIN product_skus s ON s.id = c.sku_id
-       JOIN products p ON p.id = c.product_id
-       WHERE c.user_id=? ORDER BY c.id DESC`
-    )
-    .all(uid) as unknown as CartRow[]
+async function listCart(uid: number): Promise<CartListResult> {
+  const rows = await db.prepare(
+    `SELECT c.*, p.name, p.status, s.name AS sku_name, s.price AS sku_price, s.stock AS sku_stock,
+            COALESCE(NULLIF(s.image, ''), (
+              SELECT i.url FROM product_images i WHERE i.product_id=c.product_id ORDER BY i.sort_order, i.id LIMIT 1
+            )) AS image
+     FROM cart_items c
+     JOIN product_skus s ON s.id = c.sku_id
+     JOIN products p ON p.id = c.product_id
+     WHERE c.user_id=? ORDER BY c.id DESC`,
+  ).all<CartRow>(uid)
   const items = rows.map(toCartItem)
-  const valid = items.filter((i) => !i.invalid)
+  const valid = items.filter((item) => !item.invalid)
   return {
     items,
-    total_quantity: valid.reduce((s, i) => s + i.quantity, 0),
-    total_amount: Math.round(valid.reduce((s, i) => s + i.subtotal, 0) * 100) / 100,
+    total_quantity: valid.reduce((sum, item) => sum + item.quantity, 0),
+    total_amount: Math.round(valid.reduce((sum, item) => sum + item.subtotal, 0) * 100) / 100,
   }
 }
 
 /** 仅按「归属当前用户」查询购物车项，防止越权读写 */
-function getOwnedItem(uid: number, id: number | string) {
-  return db.prepare('SELECT * FROM cart_items WHERE id=? AND user_id=?').get(id, uid) as
-    | { id: number; product_id: number; sku_id: number; quantity: number }
-    | undefined
+async function getOwnedItem(uid: number, id: number | string) {
+  return db.prepare('SELECT * FROM cart_items WHERE id=? AND user_id=?').get<{
+    id: number, product_id: number, sku_id: number, quantity: number
+  }>(id, uid)
 }
 
 /** 查询规格及其所属商品（用于校验规格属于该商品且商品在售） */
-function getSkuWithProduct(productId: number, skuId: number) {
-  return db
-    .prepare(
-      `SELECT s.id AS sku_id, s.name AS sku_name, s.stock, p.name AS product_name, p.status
-       FROM product_skus s JOIN products p ON p.id = s.product_id
-       WHERE s.id=? AND p.id=?`
-    )
-    .get(skuId, productId) as
-    | { sku_id: number; sku_name: string; stock: number; product_name: string; status: string }
-    | undefined
+async function getSkuWithProduct(productId: number, skuId: number) {
+  return db.prepare(
+    `SELECT s.id AS sku_id, s.name AS sku_name, s.stock, p.name AS product_name, p.status
+     FROM product_skus s JOIN products p ON p.id = s.product_id
+     WHERE s.id=? AND p.id=?`,
+  ).get<{ sku_id: number, sku_name: string, stock: number, product_name: string, status: string }>(skuId, productId)
 }
 
 /** 购物车列表 */
-cartRouter.get('/', (_req, res) => {
-  res.json(listCart(res.locals.uid as number))
+cartRouter.get('/', async (_req, res) => {
+  res.json(await listCart(res.locals.uid as number))
 })
 
 /** 加购：同规格已存在则累加数量（封顶 99 且不超过 SKU 库存） */
-cartRouter.post('/', (req, res) => {
+cartRouter.post('/', async (req, res) => {
   const uid = res.locals.uid as number
   const result = validateCartAdd(req.body)
   if (result.errors) return res.status(400).json({ errors: result.errors })
 
   const { product_id, sku_id, quantity } = result.value
-  const sku = getSkuWithProduct(product_id, sku_id)
+  const sku = await getSkuWithProduct(product_id, sku_id)
   if (!sku) return res.status(404).json({ errors: ['规格不存在'] })
   if (sku.status !== 'on') return res.status(400).json({ errors: [`商品已下架：${sku.product_name}`] })
 
-  const existing = db.prepare('SELECT id, quantity FROM cart_items WHERE user_id=? AND sku_id=?').get(uid, sku_id) as
-    | { id: number; quantity: number }
-    | undefined
+  const existing = await db.prepare('SELECT id, quantity FROM cart_items WHERE user_id=? AND sku_id=?').get<{
+    id: number, quantity: number
+  }>(uid, sku_id)
   const next = Math.min((existing?.quantity ?? 0) + quantity, MAX_CART_ITEM_QUANTITY)
   if (next > sku.stock) return res.status(400).json({ errors: [`库存不足：${sku.product_name}（${sku.sku_name}）仅剩 ${sku.stock} 件`] })
 
   if (existing) {
-    db.prepare(`UPDATE cart_items SET quantity=?, updated_at=datetime('now','localtime') WHERE id=?`).run(next, existing.id)
+    await db.prepare(`UPDATE cart_items SET quantity=?, updated_at=NOW() WHERE id=?`).run(next, existing.id)
   } else {
-    db.prepare('INSERT INTO cart_items (user_id, product_id, sku_id, quantity) VALUES (?, ?, ?, ?)').run(uid, product_id, sku_id, next)
+    await db.prepare('INSERT INTO cart_items (user_id, product_id, sku_id, quantity) VALUES (?, ?, ?, ?)').run(uid, product_id, sku_id, next)
   }
-  res.status(201).json(listCart(uid))
+  res.status(201).json(await listCart(uid))
 })
 
 /** 修改数量（仅本人记录，不超过 SKU 库存） */
-cartRouter.put('/:id', (req, res) => {
+cartRouter.put('/:id', async (req, res) => {
   const uid = res.locals.uid as number
-  const existing = getOwnedItem(uid, req.params.id)
+  const existing = await getOwnedItem(uid, req.params.id)
   if (!existing) return res.status(404).json({ errors: ['购物车记录不存在'] })
 
   const result = validateCartQuantity(req.body)
   if (result.errors) return res.status(400).json({ errors: result.errors })
 
-  const sku = getSkuWithProduct(existing.product_id, existing.sku_id)
+  const sku = await getSkuWithProduct(existing.product_id, existing.sku_id)
   if (sku && result.value.quantity > sku.stock) {
     return res.status(400).json({ errors: [`库存不足：${sku.product_name}（${sku.sku_name}）仅剩 ${sku.stock} 件`] })
   }
 
-  db.prepare(`UPDATE cart_items SET quantity=?, updated_at=datetime('now','localtime') WHERE id=?`).run(
+  await db.prepare(`UPDATE cart_items SET quantity=?, updated_at=NOW() WHERE id=?`).run(
     result.value.quantity,
-    existing.id
+    existing.id,
   )
-  res.json(listCart(uid))
+  res.json(await listCart(uid))
 })
 
 /** 删除购物车项（仅本人记录） */
-cartRouter.delete('/:id', (req, res) => {
+cartRouter.delete('/:id', async (req, res) => {
   const uid = res.locals.uid as number
-  const existing = getOwnedItem(uid, req.params.id)
+  const existing = await getOwnedItem(uid, req.params.id)
   if (!existing) return res.status(404).json({ errors: ['购物车记录不存在'] })
 
-  db.prepare('DELETE FROM cart_items WHERE id=?').run(existing.id)
+  await db.prepare('DELETE FROM cart_items WHERE id=?').run(existing.id)
   res.json({ ok: true })
 })

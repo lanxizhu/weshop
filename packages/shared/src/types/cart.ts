@@ -1,4 +1,4 @@
-/** 购物车模块类型定义（与 apps/api SQLite cart_items 表 + join product_skus / products 对应） */
+/** 购物车模块类型定义（与 apps/api MySQL cart_items 表 + join product_skus / products 对应） */
 
 export interface CartItem {
   id: number;

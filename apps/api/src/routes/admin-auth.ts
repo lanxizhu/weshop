@@ -14,18 +14,21 @@ adminAuthRouter.post('/login', async (req, res) => {
   const password = String(body.password ?? '')
   if (!username || !password) return res.status(400).json({ errors: ['用户名和密码不能为空'] })
 
-  const admin = getAdminAuthByUsername(username)
+  const admin = await getAdminAuthByUsername(username)
   // 用户不存在与密码错误统一提示，避免泄露账号是否存在
   if (!admin || !(await verifyPassword(password, admin.password_hash))) {
     return res.status(401).json({ errors: ['用户名或密码错误'] })
   }
-  const payload: AdminLoginResult = { token: signAdminToken(admin.id), admin: getAdminById(admin.id)! }
+  const payload: AdminLoginResult = {
+    token: await signAdminToken(admin.id),
+    admin: (await getAdminById(admin.id))!,
+  }
   res.json(payload)
 })
 
 /** 当前登录管理员 */
-adminAuthRouter.get('/me', requireAdmin, (req, res) => {
-  res.json({ admin: getAdminById(res.locals.adminId as number) })
+adminAuthRouter.get('/me', requireAdmin, async (req, res) => {
+  res.json({ admin: await getAdminById(res.locals.adminId as number) })
 })
 
 /**
@@ -41,11 +44,11 @@ adminAuthRouter.put('/password', requireAdmin, async (req, res) => {
   const pwErrors = validatePasswordStrength(newPassword)
   if (pwErrors.length) return res.status(400).json({ errors: pwErrors })
 
-  const admin = getAdminAuthById(res.locals.adminId as number)!
+  const admin = (await getAdminAuthById(res.locals.adminId as number))!
   if (!(await verifyPassword(oldPassword, admin.password_hash))) {
     return res.status(400).json({ errors: ['旧密码不正确'] })
   }
 
-  updateAdminPassword(admin.id, await hashPassword(newPassword))
-  res.json({ token: signAdminToken(admin.id), message: '密码修改成功，其他设备的登录态已全部失效' })
+  await updateAdminPassword(admin.id, await hashPassword(newPassword))
+  res.json({ token: await signAdminToken(admin.id), message: '密码修改成功，其他设备的登录态已全部失效' })
 })

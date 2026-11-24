@@ -1,4 +1,4 @@
-/** 管理员模块类型定义（与 apps/api SQLite admins 表对应） */
+/** 管理员模块类型定义（与 apps/api MySQL admins 表对应） */
 
 export interface Admin {
   id: number;

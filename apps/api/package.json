@@ -16,6 +16,7 @@
     "@weshop/shared": "workspace:*",
     "express": "^5.3.0",
     "multer": "^2.5.0",
+    "mysql2": "^3.24.6",
     "tsx": "^4.23.15",
     "zod": "^4.6.6"
   },

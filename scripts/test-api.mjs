@@ -3,22 +3,30 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 
-// 自包含 API 冒烟运行器（pnpm test）：
-// 用临时端口 + 临时数据目录起一个一次性 API 实例，再对它跑 scripts/smoke-api-ts.mjs，
-// 全程不依赖任何已启动的服务，也不触碰 apps/api/server 下的开发数据库。
+// 自包含 API 冒烟运行器：使用已有 MySQL 创建独立临时数据库，结束后删除，不触碰业务数据库。
 const repoRoot = path.resolve(import.meta.dirname, '..')
 const apiRequire = createRequire(path.join(repoRoot, 'apps/api/package.json'))
 const PORT = 7821
 const BASE = `http://localhost:${PORT}`
 const HEALTH_TIMEOUT_MS = 30_000
-
 const dataDir = mkdtempSync(path.join(tmpdir(), 'weshop-api-test-'))
+const testDatabase = `weshop_test_${process.pid}_${Date.now()}`
+const { createConnection } = apiRequire('mysql2/promise')
+const mysqlAdmin = await createConnection({
+  host: process.env.API_MYSQL_HOST ?? '127.0.0.1',
+  port: Number(process.env.API_MYSQL_PORT ?? 3306),
+  user: process.env.API_MYSQL_USER ?? 'weshop',
+  password: process.env.API_MYSQL_PASSWORD ?? '',
+})
+await mysqlAdmin.query(`CREATE DATABASE \`${testDatabase}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
+
 const apiEnv = {
   ...process.env,
+  NODE_ENV: 'test',
   API_PORT: String(PORT),
   API_DATA_DIR: dataDir,
+  API_MYSQL_DATABASE: testDatabase,
   API_ORDER_TIMEOUT_SECONDS: '2',
   API_ORDER_SWEEP_INTERVAL_SECONDS: '1',
 }
@@ -45,10 +53,11 @@ async function waitHealthy() {
   while (Date.now() < deadline) {
     if (api.exitCode !== null) throw new Error(`API 进程提前退出（exit code ${api.exitCode}）`)
     try {
-      const r = await fetch(`${BASE}/api/healthy`)
+      const response = await fetch(`${BASE}/api/healthy`)
       // 校验响应体，避免把端口上无关的 HTTP 服务误判为 API 就绪
-      if (r.status === 200 && (await r.json()).ok === true) return
-    } catch {
+      if (response.status === 200 && (await response.json()).ok === true) return
+    }
+    catch {
       // 连接被拒绝：服务还没起来，继续等
     }
     await new Promise((resolve) => setTimeout(resolve, 500))
@@ -69,7 +78,7 @@ function runSmoke() {
 }
 
 let cleanedUp = false
-/** 杀掉 API 子进程并删除临时数据目录；幂等，正常退出与信号两条路径都会走到 */
+/** 停止 API，并删除临时上传目录与 MySQL 临时数据库；幂等 */
 async function cleanup() {
   if (cleanedUp) return
   cleanedUp = true
@@ -81,12 +90,13 @@ async function cleanup() {
     ])
     if (!exited) api.kill('SIGKILL')
   }
+  await mysqlAdmin.query(`DROP DATABASE IF EXISTS \`${testDatabase}\``)
+  await mysqlAdmin.end()
   rmSync(dataDir, { recursive: true, force: true })
 }
 
-// Ctrl+C / kill 也要可靠清理（信号会同时打到子进程，这里兜底杀掉 API 并退出）
-for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
-  process.on(sig, () => {
+for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.on(signal, () => {
     cleanup().finally(() => process.exit(code))
   })
 }
@@ -110,18 +120,14 @@ async function verifyStockAdjustRollback() {
   const { product } = await created.json()
   if (created.status !== 201) throw new Error(`库存回滚测试商品创建失败：${created.status}`)
 
-  const triggerDb = new DatabaseSync(path.join(dataDir, 'data.db'))
-  try {
-    triggerDb.exec(`
-      CREATE TRIGGER fail_adjust_stock_log BEFORE INSERT ON stock_logs
-      WHEN NEW.reason = 'adjust'
-      BEGIN
-        SELECT RAISE(ABORT, 'forced stock log failure');
-      END
-    `)
-  } finally {
-    triggerDb.close()
-  }
+  await mysqlAdmin.query(`USE \`${testDatabase}\``)
+  await mysqlAdmin.query(`CREATE TRIGGER fail_adjust_stock_log BEFORE INSERT ON stock_logs
+    FOR EACH ROW
+    BEGIN
+      IF NEW.reason = 'adjust' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced stock log failure';
+      END IF;
+    END`)
 
   const adjusted = await fetch(`${BASE}/api/products/${product.id}/stock`, {
     method: 'PATCH', headers: adminAuth, body: JSON.stringify({ delta: 1 }),
@@ -129,16 +135,16 @@ async function verifyStockAdjustRollback() {
   const current = await (await fetch(`${BASE}/api/products/${product.id}`, { headers: adminAuth })).json()
   const { logs } = await (await fetch(`${BASE}/api/products/${product.id}/stock-logs`, { headers: adminAuth })).json()
   if (adjusted.status !== 500 || current.product.stock !== 5 || current.product.skus[0].stock !== 5 ||
-    logs.some(log => log.reason === 'adjust')) {
+    logs.some((log) => log.reason === 'adjust')) {
     throw new Error(`库存流水失败后未整体回滚：${JSON.stringify({ status: adjusted.status, product: current.product, logs })}`)
   }
-  console.log('[test-api] 库存流水写入失败时库存与派生字段整体回滚')
+  console.log('[test-api] MySQL 库存流水写入失败时库存与派生字段整体回滚')
 }
 
 let exitCode = 1
 try {
   await waitHealthy()
-  console.log(`[test-api] API 已就绪：${BASE}（临时数据目录 ${dataDir}）`)
+  console.log(`[test-api] API 已就绪：${BASE}（MySQL 临时数据库 ${testDatabase}）`)
 
   const emptyResponse = await fetch(`${BASE}/api/products`)
   const emptyBody = await emptyResponse.json()
@@ -158,7 +164,7 @@ try {
   const dashboard = await (await fetch(`${BASE}/api/admin/stats/dashboard`, { headers: adminAuth })).json()
   const productFields = ['total', 'onShelf', 'offShelf', 'totalValue', 'lowStock']
   const dashboardFields = ['totalOrders', 'totalRevenue', 'pendingShipment', 'todayOrders', 'todayRevenue', 'totalUsers']
-  if (!productFields.every(key => productStats[key] === 0) || !dashboardFields.every(key => dashboard.overview[key] === 0)) {
+  if (!productFields.every((key) => productStats[key] === 0) || !dashboardFields.every((key) => dashboard.overview[key] === 0)) {
     throw new Error(`空库统计未全部返回 0：${JSON.stringify({ productStats, overview: dashboard.overview })}`)
   }
   console.log('[test-api] 空库商品与仪表盘统计全部返回 0')
@@ -167,12 +173,13 @@ try {
   if (seeded.error || seeded.status !== 0) {
     throw new Error(`pnpm seed 执行失败：${seeded.error?.message ?? ''}\n${seeded.stdout ?? ''}${seeded.stderr ?? ''}`)
   }
-  console.log('[test-api] 演示数据已通过 pnpm seed 显式写入')
+  console.log('[test-api] 演示数据已写入 MySQL')
   exitCode = await runSmoke()
   if (exitCode === 0) await verifyStockAdjustRollback()
-} catch (err) {
+}
+catch (error) {
   exitCode = 1
-  console.error(`[test-api] ${err.message}`)
+  console.error(`[test-api] ${error.message}`)
   if (apiLog) console.error(`[test-api] ----- API 输出（末尾 50KB 内）-----\n${apiLog}`)
 }
 

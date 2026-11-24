@@ -34,7 +34,7 @@ RUN chmod -R a+rX /app && mkdir -p /data /app/logs && chown -R node:node /data /
 
 ENV NODE_ENV=production
 ENV API_PORT=7101
-# 数据目录挂到 volume，容器重建后 SQLite 与上传文件不丢失
+# 上传目录挂到 volume，容器重建后图片不丢失；业务数据全部由 MySQL 持久化
 ENV API_DATA_DIR=/data
 VOLUME ["/data"]
 

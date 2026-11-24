@@ -6,8 +6,8 @@ import { logger } from '../logger.js'
 
 const IO_BATCH_SIZE = 16
 
-function getUploadReferences(): Set<string> {
-  const rows = db.prepare(
+async function getUploadReferences(): Promise<Set<string>> {
+  const rows = await db.prepare(
     `SELECT url FROM product_images WHERE url LIKE '/uploads/%'
      UNION ALL
      SELECT image AS url FROM product_skus WHERE image LIKE '/uploads/%'
@@ -17,11 +17,11 @@ function getUploadReferences(): Set<string> {
      SELECT product_image AS url FROM order_items WHERE product_image LIKE '/uploads/%'
      UNION ALL
      SELECT value AS url FROM system_settings
-     WHERE key IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'
+     WHERE \`key\` IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'
      UNION ALL
      SELECT value AS url FROM system_setting_defaults
-     WHERE key IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'`
-  ).all() as { url: string }[]
+     WHERE \`key\` IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'`
+  ).all<{ url: string }>()
   return new Set(rows.map(row => row.url))
 }
 
@@ -46,7 +46,7 @@ async function unlinkUpload(url: string, filePath: string): Promise<boolean> {
 }
 
 export async function deleteLocalUploads(urls: string[]): Promise<number> {
-  const referenced = getUploadReferences()
+  const referenced = await getUploadReferences()
   const candidates = [...new Set(urls)]
     .map(url => ({ url, filePath: resolveUploadPath(url) }))
     .filter((item): item is { url: string, filePath: string } => item.filePath !== null && !referenced.has(item.url))
@@ -68,7 +68,7 @@ export async function deleteLocalUpload(url: string): Promise<boolean> {
 
 /** 扫描 UPLOAD_DIR，删除全库无任何引用的孤儿文件，返回删除数量与释放字节数 */
 export async function cleanupOrphanUploads(): Promise<{ deleted: number, freedBytes: number }> {
-  const referenced = getUploadReferences()
+  const referenced = await getUploadReferences()
   const entries = await fs.readdir(UPLOAD_DIR, { withFileTypes: true })
   const candidates = entries.filter(entry => entry.isFile() && !referenced.has(`/uploads/${entry.name}`))
 

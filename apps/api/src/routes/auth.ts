@@ -56,25 +56,25 @@ authRouter.post('/login', async (req, res) => {
   const result = await resolveOpenid(code)
   if ('errors' in result) return res.status(400).json({ errors: result.errors })
 
-  const user = upsertUserByOpenid(result.openid, profile)
+  const user = await upsertUserByOpenid(result.openid, profile)
   if (user.status === 'disabled') return res.status(403).json({ errors: ['账号已被禁用，请联系客服'] })
   const payload: LoginResult = { token: signToken(user.id), user }
   res.json(payload)
 })
 
 /** 当前登录用户 */
-authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ user: getUserById(res.locals.uid as number) })
+authRouter.get('/me', requireAuth, async (req, res) => {
+  res.json({ user: await getUserById(res.locals.uid as number) })
 })
 
 /** 更新当前用户资料（昵称 / 头像） */
-authRouter.put('/me', requireAuth, (req, res) => {
+authRouter.put('/me', requireAuth, async (req, res) => {
   const result = validateProfile(req.body)
   if (result.errors) return res.status(400).json({ errors: result.errors })
   const uid = res.locals.uid as number
-  db.prepare(
+  await db.prepare(
     `UPDATE users SET nick_name=COALESCE(?, nick_name), avatar_url=COALESCE(?, avatar_url),
-     updated_at=datetime('now','localtime') WHERE id=?`
+     updated_at=NOW() WHERE id=?`,
   ).run(result.value.nick_name ?? null, result.value.avatar_url ?? null, uid)
-  res.json({ user: getUserById(uid) })
+  res.json({ user: await getUserById(uid) })
 })

@@ -12,7 +12,7 @@
  */
 
 import process from 'node:process'
-import { db, syncProductDerivedFields, writeStockLog } from '../src/db.js'
+import { db, inTransaction, syncProductDerivedFields, writeStockLog } from '../src/db.js'
 
 // ---------- 数据定义 ----------
 
@@ -334,116 +334,120 @@ const PRODUCT_EXTENSIONS = [
 
 const stats = { categories: 0, products: 0, skus: 0, extended: 0, renamed: 0, images: 0 }
 
-db.exec('BEGIN')
 try {
-  // 分类（按名称判重，sort_order 接续最大值）
-  const findCategory = db.prepare('SELECT id FROM categories WHERE name=?')
-  const insertCategory = db.prepare('INSERT INTO categories (name, sort_order) VALUES (?, ?)')
-  let nextSort = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM categories').get()).m
-  for (const name of NEW_CATEGORIES) {
-    if (findCategory.get(name))
-      continue
-    insertCategory.run(name, ++nextSort)
-    stats.categories++
-  }
-
-  const findProduct = db.prepare('SELECT id FROM products WHERE name=?')
-  const insertProduct = db.prepare(
-    `INSERT INTO products (name, category, price, stock, description, status) VALUES (?, ?, 0, 0, ?, ?)`,
-  )
-  const insertSku = db.prepare(
-    'INSERT INTO product_skus (product_id, name, price, stock, image, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
-  )
-  const insertImage = db.prepare(
-    'INSERT INTO product_images (product_id, url, sort_order) VALUES (?, ?, ?)',
-  )
-  const findSku = db.prepare('SELECT id, stock FROM product_skus WHERE product_id=? AND name=?')
-
-  // 新商品
-  for (const p of NEW_PRODUCTS) {
-    if (findProduct.get(p.name))
-      continue
-    const productId = Number(insertProduct.run(p.name, p.category, p.description, p.status).lastInsertRowid)
-    p.skus.forEach(([skuName, price, stock], i) => {
-      const skuId = Number(insertSku.run(productId, skuName, price, stock, '', i).lastInsertRowid)
-      if (stock > 0) {
-        writeStockLog({
-          product_id: productId,
-          sku_id: skuId,
-          sku_name: skuName,
-          delta: stock,
-          stock_after: stock,
-          reason: 'init',
-          ref: '演示数据',
-          operator: 'system:seed',
-        })
-      }
-      stats.skus++
-    })
-    for (let i = 1; i <= p.imageCount; i++) {
-      insertImage.run(productId, img(p.seed, i), i - 1)
-      stats.images++
-    }
-    syncProductDerivedFields(productId)
-    stats.products++
-  }
-
-  // 存量商品规格扩展
-  for (const ext of PRODUCT_EXTENSIONS) {
-    const product = findProduct.get(ext.name)
-    if (!product)
-      continue
-    const productId = product.id
-
-    if (ext.renameDefaultTo) {
-      const r = db.prepare(
-        `UPDATE product_skus SET name=?, updated_at=datetime('now','localtime')
-         WHERE product_id=? AND name='默认规格'`,
-      ).run(ext.renameDefaultTo, productId)
-      if (r.changes > 0)
-        stats.renamed++
-    }
-
-    const maxSort = (db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_skus WHERE product_id=?').get(productId)).m
-    let sort = maxSort
-    let added = 0
-    for (const [skuName, price, stock] of ext.skus) {
-      if (findSku.get(productId, skuName))
+  await inTransaction(async () => {
+    // 分类（按名称判重，sort_order 接续最大值）
+    const findCategory = db.prepare('SELECT id FROM categories WHERE name=?')
+    const insertCategory = db.prepare('INSERT INTO categories (name, sort_order) VALUES (?, ?)')
+    const sortRow = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM categories').get()
+    let nextSort = sortRow.m
+    for (const name of NEW_CATEGORIES) {
+      if (await findCategory.get(name))
         continue
-      const skuId = Number(insertSku.run(productId, skuName, price, stock, '', ++sort).lastInsertRowid)
-      if (stock > 0) {
-        writeStockLog({
-          product_id: productId,
-          sku_id: skuId,
-          sku_name: skuName,
-          delta: stock,
-          stock_after: stock,
-          reason: 'init',
-          ref: '演示数据',
-          operator: 'system:seed',
-        })
-      }
-      stats.skus++
-      added++
+      await insertCategory.run(name, ++nextSort)
+      stats.categories++
     }
-    if (added > 0) {
-      syncProductDerivedFields(productId)
-      stats.extended++
-    }
-  }
 
-  db.exec('COMMIT')
+    const findProduct = db.prepare('SELECT id FROM products WHERE name=?')
+    const insertProduct = db.prepare(
+      `INSERT INTO products (name, category, price, stock, description, status) VALUES (?, ?, 0, 0, ?, ?)`,
+    )
+    const insertSku = db.prepare(
+      'INSERT INTO product_skus (product_id, name, price, stock, image, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    const insertImage = db.prepare(
+      'INSERT INTO product_images (product_id, url, sort_order) VALUES (?, ?, ?)',
+    )
+    const findSku = db.prepare('SELECT id, stock FROM product_skus WHERE product_id=? AND name=?')
+
+    // 新商品
+    for (const p of NEW_PRODUCTS) {
+      if (await findProduct.get(p.name))
+        continue
+      const insertedProduct = await insertProduct.run(p.name, p.category, p.description, p.status)
+      const productId = insertedProduct.lastInsertRowid
+      for (const [i, [skuName, price, stock]] of p.skus.entries()) {
+        const insertedSku = await insertSku.run(productId, skuName, price, stock, '', i)
+        const skuId = insertedSku.lastInsertRowid
+        if (stock > 0) {
+          await writeStockLog({
+            product_id: productId,
+            sku_id: skuId,
+            sku_name: skuName,
+            delta: stock,
+            stock_after: stock,
+            reason: 'init',
+            ref: '演示数据',
+            operator: 'system:seed',
+          })
+        }
+        stats.skus++
+      }
+      for (let i = 1; i <= p.imageCount; i++) {
+        await insertImage.run(productId, img(p.seed, i), i - 1)
+        stats.images++
+      }
+      await syncProductDerivedFields(productId)
+      stats.products++
+    }
+
+    // 存量商品规格扩展
+    for (const ext of PRODUCT_EXTENSIONS) {
+      const product = await findProduct.get(ext.name)
+      if (!product)
+        continue
+      const productId = product.id
+
+      if (ext.renameDefaultTo) {
+        const r = await db.prepare(
+          `UPDATE product_skus SET name=?, updated_at=NOW()
+           WHERE product_id=? AND name='默认规格'`,
+        ).run(ext.renameDefaultTo, productId)
+        if (r.changes > 0)
+          stats.renamed++
+      }
+
+      const sortRow = await db.prepare(
+        'SELECT COALESCE(MAX(sort_order), -1) AS m FROM product_skus WHERE product_id=?',
+      ).get(productId)
+      let sort = sortRow.m
+      let added = 0
+      for (const [skuName, price, stock] of ext.skus) {
+        if (await findSku.get(productId, skuName))
+          continue
+        const insertedSku = await insertSku.run(productId, skuName, price, stock, '', ++sort)
+        const skuId = insertedSku.lastInsertRowid
+        if (stock > 0) {
+          await writeStockLog({
+            product_id: productId,
+            sku_id: skuId,
+            sku_name: skuName,
+            delta: stock,
+            stock_after: stock,
+            reason: 'init',
+            ref: '演示数据',
+            operator: 'system:seed',
+          })
+        }
+        stats.skus++
+        added++
+      }
+      if (added > 0) {
+        await syncProductDerivedFields(productId)
+        stats.extended++
+      }
+    }
+  })
 }
 catch (e) {
-  db.exec('ROLLBACK')
   console.error('种子数据写入失败，已回滚：', e)
   process.exit(1)
 }
 
 const totals = {
-  categories: (db.prepare('SELECT COUNT(*) AS n FROM categories').get()).n,
-  products: (db.prepare('SELECT COUNT(*) AS n FROM products').get()).n,
-  skus: (db.prepare('SELECT COUNT(*) AS n FROM product_skus').get()).n,
+  categories: (await db.prepare('SELECT COUNT(*) AS n FROM categories').get()).n,
+  products: (await db.prepare('SELECT COUNT(*) AS n FROM products').get()).n,
+  skus: (await db.prepare('SELECT COUNT(*) AS n FROM product_skus').get()).n,
 }
 
 console.log('演示数据写入完成：')
@@ -453,3 +457,4 @@ console.log(`  当前总量：分类 ${totals.categories}，商品 ${totals.prod
 if (stats.products === 0 && stats.skus === 0 && stats.categories === 0) {
   console.log('  （全部已存在，无需重复写入）')
 }
+await db.close()

@@ -1,4 +1,4 @@
-/** 订单模块类型定义（与 apps/api SQLite orders / order_items 表对应） */
+/** 订单模块类型定义（与 apps/api MySQL orders / order_items 表对应） */
 
 export type OrderStatus = "pending" | "paid" | "shipped" | "completed" | "cancelled";
 

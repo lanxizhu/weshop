@@ -2,7 +2,7 @@
 
 本文基于当前仓库的 `docker-compose.yml`、各端 Dockerfile 和 CI 配置编写，描述单台 Linux 服务器上的部署方式。
 
-推荐交付链路为 **Docker Compose 构建并运行 Web + API，宿主机反向代理提供 HTTPS，小程序单独构建并在微信开发者工具中发布**。
+推荐交付链路为 **Docker Compose 构建并运行 Web + API + MySQL，宿主机反向代理提供 HTTPS，小程序单独构建并在微信开发者工具中发布**。
 
 ## 1. 当前部署架构
 
@@ -10,7 +10,8 @@
 | --- | --- | --- | --- |
 | `web` | React/Vite 构建静态文件，Nginx 提供访问 | 宿主机 `8080` → 容器 `80` | 管理后台，同时反代 `/api`、`/uploads` |
 | `api` | Node.js 24 + Express 5 + `tsx` | 容器 `7101` | 不对宿主机公开端口，仅供 Compose 内网访问 |
-| SQLite/上传文件 | API 容器内的 `/data` | 无 | 持久化到命名卷 `api-data` |
+| `mysql` | MySQL 8.4 | 容器 `3306` | 仅供 Compose 内网访问，持久化到命名卷 `mysql-data` |
+| 上传文件 | API 容器内的 `/data/uploads` | 无 | 持久化到命名卷 `api-data` |
 | `server` | Kotlin Ktor 演示服务 | 宿主机 `8081` → 容器 `8080` | 仅 `--profile ktor` 启用，不属于默认部署链路 |
 | 微信小程序 | Taro 构建为小程序产物 | 无 | 不在服务器容器中运行，需另行上传发布 |
 | `standalone-admin` | 独立静态原型 | 无 | 未接入 Compose，不是正式管理后台的部署目标 |
@@ -23,7 +24,8 @@
   → web 容器 Nginx
       ├─ 静态资源与 SPA 路由
       └─ /api、/uploads → api 容器:7101
-                              └─ /data：SQLite 数据库与上传文件
+                              ├─ mysql 容器:3306：业务数据
+                              └─ /data/uploads：上传文件
 ```
 
 GitHub Actions 当前只有 CI：依次执行生产依赖审计、lint、类型检查、Web/小程序构建和测试。**没有自动推送镜像或发布到服务器的 CD 流程**，服务器更新需按本文手动执行。
@@ -37,7 +39,8 @@ GitHub Actions 当前只有 CI：依次执行生产依赖审计、lint、类型�
 - 将 `apps/miniprogram/project.config.json` 中的 `touristappid` 替换为正式 AppID。
 - 将 `apps/miniprogram/config/prod.ts` 中的 `API_BASE` 替换为生产 HTTPS 域名，例如 `https://shop.example.com`，不要附加 `/api`，请求层会自动拼接。
 - 在微信公众平台配置 `request` 和 `uploadFile` 合法域名。
-- 为 API 签名密钥和管理员初始密码生成独立强随机值，不得沿用示例值。
+- 为 API 签名密钥、管理员初始密码、MySQL 业务账号和 MySQL root 生成互不相同的强随机值，不得沿用示例值。
+- 本地和生产均只使用 MySQL；`NODE_ENV=production` 下留空 MySQL 密码会拒绝启动。
 
 当前小程序支付仍是“模拟支付”：调用接口直接把待支付订单改为已支付，并未接入微信商户号和支付签名链路。需要真实收款时，必须先完成支付功能，不能将模拟支付视为生产支付能力。
 
@@ -49,7 +52,7 @@ GitHub Actions 当前只有 CI：依次执行生产依赖审计、lint、类型�
 - Compose 部署不要求服务器安装 Node.js 或 pnpm；只有在本机单独构建 Web/小程序时才需要。
 - 安全组或防火墙仅向公网开放 `80`、`443`；SSH 仅允许可信管理地址。`8080` 用于本机反向代理时，不应对公网开放。
 
-当前架构只支持 **单 API 实例**：SQLite 数据位于本机命名卷，限流状态也保存在单进程内存中。不要直接执行 `docker compose up --scale api=2`，多实例前需先完成共享存储和限流改造。
+当前架构仍只支持 **单 API 实例**：限流状态保存在单进程内存中，上传文件也在本机命名卷。不要直接执行 `docker compose up --scale api=2`，多实例前需先完成共享限流和上传存储改造。
 
 ## 3. 标准部署：服务器拉源码并构建
 
@@ -84,6 +87,15 @@ COMPOSE_PROJECT_NAME=weshop
 API_TOKEN_SECRET=<随机长字符串>
 API_ADMIN_USERNAME=admin
 API_ADMIN_PASSWORD=<独立强口令>
+
+API_MYSQL_HOST=mysql
+API_MYSQL_PORT=3306
+API_MYSQL_DATABASE=weshop
+API_MYSQL_USER=weshop
+API_MYSQL_PASSWORD=<MySQL 业务账号独立强口令>
+API_MYSQL_CONNECTION_LIMIT=10
+MYSQL_ROOT_PASSWORD=<MySQL root 独立强口令>
+
 WX_APPID=<真实小程序 AppID>
 WX_SECRET=<真实小程序 AppSecret>
 
@@ -98,7 +110,8 @@ API_LOG_MAX_FILES=5
 
 - `.env` 已被 Git 忽略，不要提交、转发或在日志中打印其中的密钥。
 - 当前 `.dockerignore` 尚未排除 `.env`。使用远程 Docker Builder 前应先补充忽略规则，避免将密钥发送到远端构建服务；现有 Dockerfile 不会把根 `.env` 复制进镜像。
-- API 镜像设置了 `NODE_ENV=production`。默认签名密钥、默认管理员密码或空微信凭证都会使 API 拒绝启动。
+- API 镜像设置了 `NODE_ENV=production`。非 MySQL、空 MySQL 密码、默认签名密钥、默认管理员密码或空微信凭证都会使 API 拒绝启动。
+- MySQL 表结构会自动幂等初始化；升级前仍须分别备份数据库与上传文件，并先在测试环境验证迁移。
 - 管理员账号只在 `admins` 表为空时初始化。已有数据库后再修改 `API_ADMIN_USERNAME` 或 `API_ADMIN_PASSWORD`，**不会修改已存在的管理员**。
 - 首次登录后台后应立即通过“修改密码”功能更换初始密码。
 - 生产环境不要执行 `pnpm seed`，该命令用于写入演示数据。
@@ -123,6 +136,7 @@ docker compose up -d --build
 
 - `weshop-api`：多阶段构建，通过 `pnpm deploy --prod` 裁剪运行依赖，以非 root 的 `node` 用户运行。
 - `weshop-web`：先产出 `apps/web/dist`，再复制到 Nginx 运行镜像。
+- `mysql:8.4`：官方 MySQL 镜像，健康通过后 API 才启动。
 
 `docker compose config --quiet` 只校验配置；不要使用未脱敏的 `docker compose config` 输出作为公开日志，因为其中可能包含环境变量值。
 
@@ -293,7 +307,7 @@ pnpm --filter miniprogram build:weapp
 cd /opt/weshop
 docker compose build
 docker compose config --images
-docker save -o weshop-images.tar weshop-api weshop-web
+docker save -o weshop-images.tar weshop-api weshop-web mysql:8.4
 gzip weshop-images.tar
 ```
 
@@ -307,43 +321,45 @@ docker compose config --quiet
 docker compose up -d --no-build
 ```
 
-镜像包不包含 `.env`，也不包含 `api-data` 数据卷。环境变量和业务数据必须分别安全传输、备份。
+镜像包不包含 `.env`，也不包含 `api-data`、`mysql-data` 数据卷。环境变量和业务数据必须分别安全传输、备份。
 
 ## 7. 数据、备份与日志
 
 ### 7.1 持久化内容
 
-使用 `COMPOSE_PROJECT_NAME=weshop` 时，实际卷名为 `weshop_api-data`：
+使用 `COMPOSE_PROJECT_NAME=weshop` 时，实际卷名为 `weshop_mysql-data` 与 `weshop_api-data`：
 
 ```bash
+docker volume inspect weshop_mysql-data
 docker volume inspect weshop_api-data
 ```
 
-容器内主要文件：
-
-| 路径 | 内容 |
+| 位置 | 内容 |
 | --- | --- |
-| `/data/data.db` | SQLite 主数据库 |
-| `/data/data.db-wal`、`/data/data.db-shm` | SQLite WAL 运行期侧车文件 |
-| `/data/uploads/` | 用户与管理员上传的图片 |
+| MySQL 容器 `/var/lib/mysql` | 商品、账户、订单、地址等业务数据 |
+| API 容器 `/data/uploads/` | 用户与管理员上传的图片 |
 
-不要只复制运行中的 `data.db`，否则可能遗漏 WAL 中尚未合并的数据。下面的冷备份会先停止 API，再完整备份数据卷。
+MySQL 使用 `mysqldump --single-transaction` 做一致性逻辑备份；上传文件在同一停机窗口打包。不要直接复制运行中的 MySQL 数据目录作为唯一备份。
 
 ### 7.2 冷备份
 
 ```bash
 cd /opt/weshop
 mkdir -p backups
-backup_file="api-data-$(date +%Y%m%d-%H%M%S).tar.gz"
+backup_suffix="$(date +%Y%m%d-%H%M%S)"
+mysql_backup="mysql-$backup_suffix.sql"
+uploads_backup="api-data-$backup_suffix.tar.gz"
 
-docker compose stop api
+docker compose stop web api
+docker compose exec -T mysql sh -c 'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --quick --routines --triggers --hex-blob --set-gtid-purged=OFF --default-character-set=utf8mb4 "$MYSQL_DATABASE"' > "backups/$mysql_backup"
 docker run --rm \
   -v weshop_api-data:/data:ro \
   -v "$PWD/backups":/backup \
-  alpine sh -c "tar czf /backup/$backup_file -C /data ."
-docker compose start api
+  alpine sh -c "tar czf /backup/$uploads_backup -C /data ."
+docker compose up -d
 
-ls -lh "backups/$backup_file"
+test -s "backups/$mysql_backup"
+ls -lh "backups/$mysql_backup" "backups/$uploads_backup"
 curl --fail http://127.0.0.1:8080/api/healthy
 ```
 
@@ -351,15 +367,22 @@ curl --fail http://127.0.0.1:8080/api/healthy
 
 ### 7.3 恢复
 
-**恢复会清空目标卷当前内容。执行前必须另存当前卷备份，并先在测试环境验证备份包。** 将命令中的备份文件名替换为实际文件：
+**恢复会重建目标数据库并清空上传文件卷。执行前必须另存当前备份，并先在测试环境验证备份包。** 将两个文件名替换为同一批次实际文件：
 
 ```bash
 cd /opt/weshop
+mysql_backup="backups/mysql-YYYYMMDD-HHMMSS.sql"
+uploads_backup="api-data-YYYYMMDD-HHMMSS.tar.gz"
+test -s "$mysql_backup"
+test -s "backups/$uploads_backup"
+
 docker compose stop web api
+docker compose exec -T mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS \`$MYSQL_DATABASE\`; CREATE DATABASE \`$MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"'
+docker compose exec -T mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' < "$mysql_backup"
 docker run --rm \
   -v weshop_api-data:/data \
   -v "$PWD/backups":/backup:ro \
-  alpine sh -c 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf /backup/api-data-YYYYMMDD-HHMMSS.tar.gz -C /data && chown -R 1000:1000 /data'
+  alpine sh -c "find /data -mindepth 1 -maxdepth 1 -exec rm -rf {} + && tar xzf /backup/$uploads_backup -C /data && chown -R 1000:1000 /data"
 docker compose up -d
 docker compose ps
 curl --fail http://127.0.0.1:8080/api/healthy
@@ -374,6 +397,7 @@ docker compose ps
 # 实时日志
 docker compose logs -f --tail=200 api
 docker compose logs -f --tail=200 web
+docker compose logs -f --tail=200 mysql
 
 # 重启全部默认服务（只重启现有容器，不重新构建镜像）
 docker compose restart

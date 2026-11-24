@@ -1,4 +1,4 @@
-/** 收货地址模块类型定义（与 apps/api SQLite addresses 表对应） */
+/** 收货地址模块类型定义（与 apps/api MySQL addresses 表对应） */
 
 export interface Address {
   id: number;
