@@ -8,6 +8,7 @@ import {
   validateProduct,
   validateProfile,
   validateStockDelta,
+  validateSystemSettings,
 } from './validate.js'
 
 describe('validateProduct', () => {
@@ -70,6 +71,38 @@ describe('validatePasswordStrength', () => {
   })
 })
 
+
+describe('validateSystemSettings', () => {
+  it('规范化网站品牌信息与图片地址', () => {
+    const result = validateSystemSettings({
+      site_name: ' 新商城 ',
+      site_description: ' 精选好物 ',
+      site_logo_url: ' /uploads/logo.png ',
+      site_favicon_url: ' https://example.com/favicon.png ',
+    })
+    expect(result.errors).toBeUndefined()
+    expect(result.value).toEqual({
+      site_name: '新商城',
+      site_description: '精选好物',
+      site_logo_url: '/uploads/logo.png',
+      site_favicon_url: 'https://example.com/favicon.png',
+    })
+  })
+
+  it('拒绝空网站名称和危险图片协议', () => {
+    const result = validateSystemSettings({
+      site_name: ' ',
+      site_description: '',
+      site_logo_url: 'data:image/svg+xml;base64,PHN2Zz4=',
+      site_favicon_url: 'javascript:alert(1)',
+    })
+    expect(result.errors).toEqual(expect.arrayContaining([
+      '网站名称不能为空',
+      '网站 Logo 地址必须是 http(s) 链接或 /uploads/ 路径',
+      '网站图标地址必须是 http(s) 链接或 /uploads/ 路径',
+    ]))
+  })
+})
 
 describe('zod 请求边界校验', () => {
   const validSku = { name: '默认规格', price: 9.9, stock: 2 }

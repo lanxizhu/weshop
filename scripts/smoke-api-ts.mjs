@@ -39,6 +39,8 @@ const j = (r) => r.json()
 let completedOrderNo = ''
 let offProductId = 0
 let snapshotUrl = ''
+let originalSettings
+let originalDefaults
 
 // 健康检查
 {
@@ -172,6 +174,100 @@ let adminAuth
 
   // 两轮改密使最早登录拿到的 adminAuth 令牌已吊销，后续段落统一换用恢复后的新令牌
   adminAuth = { 'Content-Type': 'application/json', Authorization: `Bearer ${rlb.token}` }
+}
+
+// 系统设置（公开读取、管理员全量更新，结束时恢复原值）
+{
+  const initial = await fetch(`${BASE}/api/settings`)
+  const initialBody = await j(initial)
+  originalSettings = initialBody.settings
+  check(
+    'GET /api/settings 公开返回完整默认结构',
+    initial.status === 200 && ['site_name', 'site_description', 'site_logo_url', 'site_favicon_url']
+      .every(key => typeof originalSettings?.[key] === 'string')
+  )
+
+  const noTokenDefaults = await fetch(`${BASE}/api/settings/defaults`)
+  check('GET /api/settings/defaults 无 token 401', noTokenDefaults.status === 401)
+  const initialDefaultsResponse = await fetch(`${BASE}/api/settings/defaults`, { headers: adminAuth })
+  originalDefaults = (await j(initialDefaultsResponse)).defaults
+  check(
+    'GET /api/settings/defaults 返回内置或已保存默认快照',
+    initialDefaultsResponse.status === 200 && ['site_name', 'site_description', 'site_logo_url', 'site_favicon_url']
+      .every(key => typeof originalDefaults?.[key] === 'string')
+  )
+
+  const noToken = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(originalSettings),
+  })
+  check('PUT /api/settings 无 token 401', noToken.status === 401)
+
+  const invalid = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...originalSettings, site_name: ' ', site_favicon_url: 'javascript:alert(1)' }),
+  })
+  check('PUT /api/settings 拒绝空名称与危险图标协议', invalid.status === 400)
+
+  const next = {
+    ...originalSettings,
+    site_name: '冒烟测试商城',
+    site_description: '系统设置持久化回归',
+    site_logo_url: '/uploads/smoke-logo.png',
+    site_favicon_url: '/uploads/smoke-favicon.png',
+  }
+  const updated = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(next),
+  })
+  const updatedBody = await j(updated)
+  check(
+    'PUT /api/settings 200 + 返回已保存设置',
+    updated.status === 200 && updatedBody.settings?.site_name === next.site_name &&
+      updatedBody.settings?.site_favicon_url === next.site_favicon_url
+  )
+
+  const persisted = await j(await fetch(`${BASE}/api/settings`))
+  check('GET /api/settings 无需鉴权即可读取已持久化设置', persisted.settings?.site_description === next.site_description)
+
+  const noTokenSaveDefaults = await fetch(`${BASE}/api/settings/defaults`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
+  })
+  check('PUT /api/settings/defaults 无 token 401', noTokenSaveDefaults.status === 401)
+  const savedDefaults = await fetch(`${BASE}/api/settings/defaults`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(next),
+  })
+  const savedDefaultsBody = await j(savedDefaults)
+  check(
+    'PUT /api/settings/defaults 保存当前配置快照且不改当前设置',
+    savedDefaults.status === 200 && savedDefaultsBody.defaults?.site_name === next.site_name &&
+      savedDefaultsBody.defaults?.site_favicon_url === next.site_favicon_url
+  )
+
+  await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...originalSettings, site_name: '等待恢复默认的临时名称' }),
+  })
+  const noTokenRestore = await fetch(`${BASE}/api/settings/restore-defaults`, { method: 'POST' })
+  check('POST /api/settings/restore-defaults 无 token 401', noTokenRestore.status === 401)
+  const restoredDefaults = await fetch(`${BASE}/api/settings/restore-defaults`, {
+    method: 'POST', headers: adminAuth,
+  })
+  const restoredDefaultsBody = await j(restoredDefaults)
+  check(
+    'POST /api/settings/restore-defaults 用自定义快照覆盖当前设置',
+    restoredDefaults.status === 200 && restoredDefaultsBody.settings?.site_name === next.site_name &&
+      restoredDefaultsBody.settings?.site_description === next.site_description
+  )
+  const persistedDefaults = await j(await fetch(`${BASE}/api/settings/defaults`, { headers: adminAuth }))
+  check('恢复当前设置不会清空默认配置快照', persistedDefaults.defaults?.site_name === next.site_name)
+
+  const restoredOriginalDefaults = await fetch(`${BASE}/api/settings/defaults`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(originalDefaults),
+  })
+  check('恢复冒烟前的默认配置快照', restoredOriginalDefaults.status === 200)
+  const restored = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(originalSettings),
+  })
+  check('恢复冒烟前的系统设置', restored.status === 200)
 }
 
 // 种子数据与公开商品过滤
@@ -1241,6 +1337,26 @@ let uploadedUrl
   const noTokenClean = await fetch(`${BASE}/api/admin/uploads/cleanup`, { method: 'POST' })
   check('POST /admin/uploads/cleanup 无 token 401', noTokenClean.status === 401)
 
+  const faviconFd = new FormData()
+  faviconFd.append('file', new Blob([PNG], { type: 'image/png' }), 'system-favicon.png')
+  const faviconUpload = await fetch(`${BASE}/api/uploads`, {
+    method: 'POST', headers: { Authorization: adminAuth.Authorization }, body: faviconFd,
+  })
+  const faviconUrl = (await j(faviconUpload)).url ?? ''
+  const faviconSetting = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...originalSettings, site_favicon_url: faviconUrl }),
+  })
+  const faviconDefault = await fetch(`${BASE}/api/settings/defaults`, {
+    method: 'PUT', headers: adminAuth,
+    body: JSON.stringify({ ...originalDefaults, site_favicon_url: faviconUrl }),
+  })
+  check(
+    '上传并设置当前及默认配置的网站 favicon',
+    faviconUpload.status === 201 && faviconUrl.startsWith('/uploads/') && faviconSetting.status === 200 &&
+      faviconDefault.status === 200
+  )
+
   const clean = await fetch(`${BASE}/api/admin/uploads/cleanup`, { method: 'POST', headers: adminAuth })
   const cleanBody = await j(clean)
   check(
@@ -1251,6 +1367,24 @@ let uploadedUrl
   )
   const snapshotAfterCleanup = await fetch(`${BASE}${snapshotUrl}`)
   check('孤儿文件清理保留历史订单快照图片', snapshotAfterCleanup.status === 200)
+  const faviconAfterCleanup = await fetch(`${BASE}${faviconUrl}`)
+  check('孤儿文件清理保留系统设置中的 favicon', faviconAfterCleanup.status === 200)
+
+  const restoredSettings = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(originalSettings),
+  })
+  check('清理回归结束后恢复系统 favicon', restoredSettings.status === 200)
+  await fetch(`${BASE}/api/admin/uploads/cleanup`, { method: 'POST', headers: adminAuth })
+  const faviconWithDefaultReference = await fetch(`${BASE}${faviconUrl}`)
+  check('当前设置变更后仍保留默认快照引用的 favicon', faviconWithDefaultReference.status === 200)
+
+  const restoredDefaults = await fetch(`${BASE}/api/settings/defaults`, {
+    method: 'PUT', headers: adminAuth, body: JSON.stringify(originalDefaults),
+  })
+  check('清理回归结束后恢复默认 favicon', restoredDefaults.status === 200)
+  await fetch(`${BASE}/api/admin/uploads/cleanup`, { method: 'POST', headers: adminAuth })
+  const removedFavicon = await fetch(`${BASE}${faviconUrl}`)
+  check('当前与默认配置均取消引用后可清理临时 favicon', removedFavicon.status === 404)
 }
 
 // 404 与错误体

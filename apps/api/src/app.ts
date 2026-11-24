@@ -12,6 +12,7 @@ import { categoriesRouter } from './routes/categories.js'
 import { healthyRouter } from './routes/healthy.js'
 import { ordersRouter } from './routes/orders.js'
 import { productsRouter, statsHandler } from './routes/products.js'
+import { settingsRouter } from './routes/settings.js'
 import { statsRouter } from './routes/stats.js'
 import { uploadsRouter } from './routes/uploads.js'
 import { usersRouter } from './routes/users.js'
@@ -33,6 +34,7 @@ export function createApp() {
   app.use('/api/products', productsRouter)
   app.get('/api/stats', requireAdmin, statsHandler)
   app.use('/api/categories', categoriesRouter)
+  app.use('/api/settings', settingsRouter)
   app.use('/api/uploads', uploadsRouter)
   app.use('/api/healthy', healthyRouter)
   app.use('/api/auth', authRouter)

@@ -1,5 +1,6 @@
 import { Outlet, useRouter } from '@tanstack/react-router'
 import { Suspense, useEffect } from 'react'
+import { SystemSettingsProvider } from '@/components/system-settings-provider'
 import { Toaster } from '@/components/ui/sonner'
 import { Spinner } from '@/components/ui/spinner'
 import { AUTH_UNAUTHORIZED_EVENT } from '@/lib/auth'
@@ -26,11 +27,11 @@ export default function App() {
   }, [router])
 
   return (
-    <>
+    <SystemSettingsProvider>
       <Suspense fallback={<PageLoading />}>
         <Outlet />
       </Suspense>
       <Toaster position="top-center" richColors />
-    </>
+    </SystemSettingsProvider>
   )
 }

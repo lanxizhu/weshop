@@ -96,6 +96,12 @@ const dashboardRoute = createRoute({
   component: lazyRouteComponent(() => import('@/pages/Dashboard')),
 })
 
+const settingsRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: '/settings',
+  component: lazyRouteComponent(() => import('@/pages/SystemSettings')),
+})
+
 const changePasswordRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: '/change-password',
@@ -116,6 +122,7 @@ const routeTree = rootRoute.addChildren([
     usersRoute,
     ordersRoute,
     dashboardRoute,
+    settingsRoute,
     changePasswordRoute,
     notFoundRoute,
   ]),

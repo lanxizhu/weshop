@@ -14,7 +14,13 @@ function getUploadReferences(): Set<string> {
      UNION ALL
      SELECT avatar_url AS url FROM users WHERE avatar_url LIKE '/uploads/%'
      UNION ALL
-     SELECT product_image AS url FROM order_items WHERE product_image LIKE '/uploads/%'`
+     SELECT product_image AS url FROM order_items WHERE product_image LIKE '/uploads/%'
+     UNION ALL
+     SELECT value AS url FROM system_settings
+     WHERE key IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'
+     UNION ALL
+     SELECT value AS url FROM system_setting_defaults
+     WHERE key IN ('site_logo_url', 'site_favicon_url') AND value LIKE '/uploads/%'`
   ).all() as { url: string }[]
   return new Set(rows.map(row => row.url))
 }

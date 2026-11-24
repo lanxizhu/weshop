@@ -15,6 +15,8 @@ import type {
   ProductListResult,
   ProductStats,
   StockLog,
+  SystemSettings,
+  SystemSettingsInput,
   User,
   UserDetail,
   UserListParams,
@@ -256,6 +258,28 @@ export function fetchAdminMe() {
   return request<{ admin: Admin }>('/admin/auth/me')
 }
 
+// ---------- 系统设置 ----------
+
+/** 公开站点品牌信息，登录页也可读取 */
+export function fetchSystemSettings() {
+  return request<{ settings: SystemSettings }>('/settings')
+}
+
+/** 全量保存系统设置，成功后由全局 Provider 同步浏览器标题与品牌区 */
+export function updateSystemSettings(input: SystemSettingsInput) {
+  return request<{ settings: SystemSettings }>('/settings', { method: 'PUT', data: input })
+}
+
+/** 把指定的已保存配置写入独立默认快照，不改变当前线上设置 */
+export function updateSystemSettingsDefaults(input: SystemSettingsInput) {
+  return request<{ defaults: SystemSettings }>('/settings/defaults', { method: 'PUT', data: input })
+}
+
+/** 用最近一次默认快照覆盖当前设置；未保存过快照时使用内置配置 */
+export function restoreSystemSettingsDefaults() {
+  return request<{ settings: SystemSettings }>('/settings/restore-defaults', { method: 'POST' })
+}
+
 // ---------- 商品 ----------
 
 /** 序列化商品列表查询参数（列表与 CSV 导出共用） */
@@ -372,7 +396,12 @@ export function deleteProduct(id: number) {
 export function uploadImage(file: File): Promise<string> {
   const fd = new FormData()
   fd.append('file', file)
-  const config: AxiosRequestConfig = { method: 'POST', url: '/uploads', data: fd }
+  const config: AxiosRequestConfig = {
+    method: 'POST',
+    url: '/uploads',
+    data: fd,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }
   return executeWithRetry(config, async () => {
     const res = await http.request<{ url: string }>(config)
     return res.data.url

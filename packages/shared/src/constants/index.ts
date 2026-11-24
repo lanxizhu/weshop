@@ -1,3 +1,5 @@
+export * from "./system-settings.js";
+
 export const API_BASE_URL = "http://localhost:8080";
 
 /** 低库存预警阈值：库存小于该值时视为库存不足 */

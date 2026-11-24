@@ -10,6 +10,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Input } from '@/components/ui/input'
 import { adminLogin } from '@/lib/api'
 import { setToken } from '@/lib/auth'
+import { useSystemSettings } from '@/lib/system-settings'
 
 const schema = z.object({
   username: z.string().min(1, '请输入用户名'),
@@ -22,6 +23,7 @@ const routeApi = getRouteApi('/login')
 
 export default function Login() {
   const router = useRouter()
+  const { settings } = useSystemSettings()
   const redirectPath = routeApi.useSearch().redirect ?? '/'
   const [submitting, setSubmitting] = useState(false)
 
@@ -50,8 +52,12 @@ export default function Login() {
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <div className="flex items-center gap-2 font-semibold">
-            <Package className="h-5 w-5 text-primary" />
-            WeShop 管理后台
+            {settings.site_logo_url
+              ? <img src={settings.site_logo_url} alt="" className="size-7 rounded object-contain" />
+              : <Package className="h-5 w-5 text-primary" aria-hidden="true" />}
+            {settings.site_name}
+            {' '}
+            管理后台
           </div>
           <CardTitle className="text-xl">管理员登录</CardTitle>
           <CardDescription>登录后进入管理后台</CardDescription>

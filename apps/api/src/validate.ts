@@ -7,6 +7,7 @@ import type {
   ProductInput,
   ProfileInput,
   StockAdjustInput,
+  SystemSettingsInput,
 } from '@weshop/shared'
 import { MAX_CART_ITEM_QUANTITY, MAX_ORDER_REMARK_LENGTH, PHONE_REGEX } from '@weshop/shared'
 
@@ -178,6 +179,37 @@ const profileSchema = bodyObject({
 /** 校验资料更新请求体：昵称与头像至少传一个 */
 export function validateProfile(body: unknown): ProfileValidationResult {
   return parseWithSchema(profileSchema, body)
+}
+
+export type SystemSettingsValidationResult = ValidationResult<SystemSettingsInput>
+
+function settingImageSchema(label: string) {
+  const message = `${label}必须是 http(s) 链接或 /uploads/ 路径`
+  return z.preprocess(
+    value => value ?? '',
+    z.string({ error: message })
+      .trim()
+      .max(2048, `${label}不能超过 2048 个字符`)
+      .refine(value => value === '' || IMAGE_URL_REGEX.test(value), message)
+  )
+}
+
+const systemSettingsSchema = bodyObject({
+  site_name: z.preprocess(
+    value => value ?? '',
+    z.string({ error: '网站名称不能为空' }).trim().min(1, '网站名称不能为空').max(50, '网站名称不能超过 50 字')
+  ),
+  site_description: z.preprocess(
+    value => value ?? '',
+    z.string({ error: '网站简介必须是字符串' }).trim().max(200, '网站简介不能超过 200 字')
+  ),
+  site_logo_url: settingImageSchema('网站 Logo 地址'),
+  site_favicon_url: settingImageSchema('网站图标地址'),
+})
+
+/** 校验并规范化系统设置；品牌图片只允许本地上传路径或 http(s) 地址 */
+export function validateSystemSettings(body: unknown): SystemSettingsValidationResult {
+  return parseWithSchema(systemSettingsSchema, body)
 }
 
 export type CartAddResult = ValidationResult<CartAddInput>
